@@ -1,7 +1,11 @@
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import type { AdminUnit, TkgmRawParcel } from './types.ts';
 
 const BASE_URL = 'https://cbsapi.tkgm.gov.tr/megsiswebapi.v3.1/api';
 const REQUEST_TIMEOUT_MS = 30_000;
+/** Admin boundaries are static: cache them so reruns spend the daily quota on parcels only. */
+const ADMIN_CACHE_DIR = join(process.cwd(), 'data', 'cache', 'admin');
 const RETRYABLE_STATUS = new Set([408, 425, 429, 500, 502, 503, 504]);
 
 export interface TkgmClientOptions {
@@ -15,6 +19,17 @@ interface AdminFeatureCollection {
         geometry: AdminUnit['geometry'];
         properties: { id: string; text: string };
     }>;
+}
+
+/**
+ * The public service answers 403 "Günlük sorgu limitini aştınız." once the per-client daily quota
+ * is used up. This is an access rule, not a transient error: stop and resume on another day.
+ */
+export class TkgmQuotaExceededError extends Error {
+    constructor(body: string) {
+        super(`TKGM daily quota exceeded: ${body.trim()}`);
+        this.name = 'TkgmQuotaExceededError';
+    }
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -57,12 +72,21 @@ export class TkgmClient {
     }
 
     private async getAdminList(path: string): Promise<AdminUnit[]> {
+        const cachePath = join(ADMIN_CACHE_DIR, path.replace(/[^\w-]+/g, '_') + '.json');
+        if (existsSync(cachePath)) {
+            return JSON.parse(readFileSync(cachePath, 'utf8')) as AdminUnit[];
+        }
         const data = await this.getJson<AdminFeatureCollection>(path);
-        return (data?.features ?? []).map((feature) => ({
+        const units = (data?.features ?? []).map((feature) => ({
             id: feature.properties.id,
             name: feature.properties.text,
             geometry: feature.geometry,
         }));
+        if (units.length > 0) {
+            mkdirSync(ADMIN_CACHE_DIR, { recursive: true });
+            writeFileSync(cachePath, JSON.stringify(units));
+        }
+        return units;
     }
 
     private async getJson<T>(path: string): Promise<T | null> {
@@ -79,6 +103,9 @@ export class TkgmClient {
                 }
                 if (response.ok) {
                     return (await response.json()) as T;
+                }
+                if (response.status === 403) {
+                    throw new TkgmQuotaExceededError(await response.text());
                 }
                 if (!RETRYABLE_STATUS.has(response.status) || attempt >= this.options.maxRetries) {
                     throw new Error(`TKGM ${response.status} for ${path}`);

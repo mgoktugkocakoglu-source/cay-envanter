@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Parsel Kütüphanesi Görüntüleyici</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+    body { margin: 0; font: 14px Inter, system-ui, sans-serif; color: #0f172a; }
+    #map { position: absolute; inset: 0; }
+    .panel { position: absolute; z-index: 1000; top: 12px; left: 56px; background: #fff; border: 1px solid #e2e8f0;
+        border-radius: 8px; padding: 12px 16px; max-width: 320px; max-height: calc(100vh - 48px); overflow: auto; }
+    .panel h1 { font-size: 15px; margin: 0 0 8px; }
+    .legend div { display: flex; align-items: center; gap: 8px; margin: 2px 0; }
+    .legend i { width: 14px; height: 14px; border-radius: 3px; flex: none; }
+    .muted { color: #64748b; font-size: 12px; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div class="panel">
+    <h1>Parsel Kütüphanesi</h1>
+    <input type="file" id="file" accept=".geojson,.json">
+    <p class="muted">data/library/&lt;il&gt;/&lt;ilçe&gt;/&lt;mahalle&gt;/parcels.geojson dosyasını seçin.</p>
+    <div id="stats"></div>
+    <div class="legend" id="legend"></div>
+</div>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+    const COLORS = [
+        [/çay/i, '#15803d'], [/fındık/i, '#a16207'], [/orman/i, '#14532d'], [/tarla/i, '#ca8a04'],
+        [/ev|bina|ahır|samanlık/i, '#b91c1c'], [/çayır|mera/i, '#65a30d'], [/bahçe/i, '#0d9488'],
+    ];
+    const colorOf = (nature) => (COLORS.find(([re]) => re.test(nature)) || [null, '#94a3b8'])[1];
+
+    const map = L.map('map').setView([40.807, 40.317], 14);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        maxZoom: 19, attribution: '© OpenStreetMap',
+    }).addTo(map);
+    let layer = null;
+
+    document.getElementById('file').addEventListener('change', async (event) => {
+        const file = event.target.files[0];
+        if (!file) return;
+        const data = JSON.parse(await file.text());
+        if (layer) layer.remove();
+        layer = L.geoJSON(data, {
+            style: (f) => ({ color: '#0f172a', weight: 0.6, fillColor: colorOf(f.properties.nature), fillOpacity: 0.55 }),
+            onEachFeature: (f, l) => {
+                const p = f.properties;
+                l.bindPopup(`<b>${p.block}/${p.parcel}</b> — ${p.nature}<br>Tapu alanı: ${p.deedAreaM2?.toLocaleString('tr')} m²` +
+                    `<br>Poligon alanı: ${p.geometryAreaM2.toLocaleString('tr')} m²<br>Mevki: ${p.locality}` +
+                    (p.successorParcels ? `<br>Gittiği parseller: ${p.successorParcels}` : ''));
+            },
+        }).addTo(map);
+        map.fitBounds(layer.getBounds());
+
+        const byNature = {};
+        for (const f of data.features) {
+            const n = f.properties.nature || '(boş)';
+            byNature[n] ??= { count: 0, area: 0 };
+            byNature[n].count++;
+            byNature[n].area += f.properties.deedAreaM2 || 0;
+        }
+        document.getElementById('stats').textContent = `${data.features.length} parsel`;
+        document.getElementById('legend').innerHTML = Object.entries(byNature)
+            .sort((a, b) => b[1].area - a[1].area)
+            .map(([n, v]) => `<div><i style="background:${colorOf(n)}"></i>${n} — ${v.count} parsel, ${(v.area / 1000).toLocaleString('tr', { maximumFractionDigits: 1 })} da</div>`)
+            .join('');
+    });
+</script>
+</body>
+</html>

@@ -79,6 +79,10 @@ async function main(): Promise<void> {
             console.log('İstek limitine ulaşıldı. Aynı komutla devam edebilirsiniz.');
             break;
         }
+        if (result.outcome === 'daily_quota') {
+            console.log('TKGM günlük sorgu kotası doldu. Yarın aynı komutla kaldığı yerden devam edin.');
+            break;
+        }
     }
 }
 

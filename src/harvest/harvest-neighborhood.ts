@@ -2,7 +2,7 @@ import { pointOnFeature, feature } from '@turf/turf';
 import type { Position } from 'geojson';
 import { CoverageTracker, type CoverageOptions } from './coverage.ts';
 import { normalizeParcel, parcelKey } from '../tkgm/normalize.ts';
-import type { TkgmClient } from '../tkgm/client.ts';
+import { TkgmQuotaExceededError, type TkgmClient } from '../tkgm/client.ts';
 import type { Parcel, TkgmRawParcel } from '../tkgm/types.ts';
 import type { NeighborhoodMeta, NeighborhoodStore } from '../library/store.ts';
 
@@ -23,7 +23,7 @@ export interface HarvestOptions {
     maxRequests: number;
 }
 
-export type HarvestOutcome = 'complete' | 'request_limit';
+export type HarvestOutcome = 'complete' | 'request_limit' | 'daily_quota';
 
 export interface HarvestResult {
     outcome: HarvestOutcome;
@@ -75,10 +75,13 @@ class NeighborhoodHarvest {
             }
             await this.fillGaps();
         } catch (error) {
-            if (!(error instanceof RequestLimitReached)) {
+            if (error instanceof RequestLimitReached) {
+                outcome = 'request_limit';
+            } else if (error instanceof TkgmQuotaExceededError) {
+                outcome = 'daily_quota';
+            } else {
                 throw error;
             }
-            outcome = 'request_limit';
         }
         return {
             outcome,
