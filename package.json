@@ -1,0 +1,22 @@
+{
+    "name": "cay-envanter",
+    "version": "0.1.0",
+    "private": true,
+    "description": "Çay bahçesi mekansal envanteri: TKGM parsel kütüphanesi, uzaktan algılama ile çay tespiti ve ruhsat eşleştirme",
+    "type": "module",
+    "engines": {
+        "node": ">=22.18"
+    },
+    "scripts": {
+        "harvest": "node src/cli/harvest.ts",
+        "typecheck": "tsc --noEmit"
+    },
+    "dependencies": {
+        "@turf/turf": "^7.2.0"
+    },
+    "devDependencies": {
+        "@types/geojson": "^7946.0.16",
+        "@types/node": "^24.0.0",
+        "typescript": "^5.9.0"
+    }
+}
