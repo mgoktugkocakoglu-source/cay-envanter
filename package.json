@@ -10,7 +10,8 @@
     "scripts": {
         "harvest": "node src/cli/harvest.ts",
         "typecheck": "tsc --noEmit",
-        "ee:check": "node src/cli/ee-check.ts"
+        "ee:check": "node src/cli/ee-check.ts",
+        "detect-tea": "node src/cli/detect-tea.ts"
     },
     "dependencies": {
         "@google/earthengine": "^1.7.47",
