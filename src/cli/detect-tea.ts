@@ -5,6 +5,7 @@ import { initEarthEngine, evaluate } from '../ee/session.ts';
 import { buildTeaFeatures } from '../ee/tea-features.ts';
 import { labelParcels } from '../ee/weak-labels.ts';
 import { NeighborhoodStore } from '../library/store.ts';
+import { isTeaTitle } from '../tkgm/titles.ts';
 
 /* `ee` objects are untyped (see src/types/earthengine.d.ts). */
 type EE = any; // eslint-disable-line @typescript-eslint/no-explicit-any
@@ -149,8 +150,8 @@ async function main(): Promise<void> {
     writeFileSync(join(store.dir, 'tea-patches.geojson'), JSON.stringify(patchCollection));
     store.writeGeoJson('parcels-tea.geojson', enriched);
 
-    const titledTea = enriched.filter((p) => /çay/i.test(p.properties.nature));
-    const otherTitles = enriched.filter((p) => !/çay/i.test(p.properties.nature));
+    const titledTea = enriched.filter((p) => isTeaTitle(p.properties.nature));
+    const otherTitles = enriched.filter((p) => !isTeaTitle(p.properties.nature));
     const share = (p: (typeof enriched)[number]) => p.properties.teaShare ?? 0;
     const report = {
         neighborhood: meta.neighborhood,

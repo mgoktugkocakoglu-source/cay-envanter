@@ -1,8 +1,8 @@
 import type { Parcel } from '../tkgm/types.ts';
 import type { HarvestResult } from '../harvest/harvest-neighborhood.ts';
 import type { NeighborhoodMeta } from './store.ts';
+import { isTeaTitle } from '../tkgm/titles.ts';
 
-const TEA_NATURE = /çay/i;
 /** Deed vs. polygon area mismatch worth flagging (the deed area is the legal one). */
 const AREA_MISMATCH_RATIO = 0.1;
 
@@ -18,7 +18,7 @@ export function buildSummary(meta: NeighborhoodMeta, result: HarvestResult, boun
         byNature.set(properties.nature, entry);
     }
     const sumDeed = (parcels: Parcel[]) => round(parcels.reduce((sum, p) => sum + (p.properties.deedAreaM2 ?? 0), 0));
-    const teaTitled = target.filter((p) => TEA_NATURE.test(p.properties.nature));
+    const teaTitled = target.filter((p) => isTeaTitle(p.properties.nature));
     const areaMismatches = target.filter(({ properties }) => {
         const deed = properties.deedAreaM2;
         return deed !== null && deed > 0 && Math.abs(properties.geometryAreaM2 - deed) / deed > AREA_MISMATCH_RATIO;

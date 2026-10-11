@@ -1,3 +1,5 @@
+import { isTeaTitle } from '../tkgm/titles.ts';
+
 /**
  * DEMO ÇAYKUR license register. ÇAYKUR's real ruhsat database is not available yet, so this
  * builds a deterministic, clearly fake register on top of real TKGM parcels and real satellite
@@ -51,7 +53,6 @@ function mulberry32(seed: number): () => number {
  * the demo keeps one license per parcel, so only a floor against degenerate areas is applied.
  */
 const MIN_LICENSE_M2 = 100;
-const isTeaTitle = (nature: string) => /çay/i.test(nature);
 
 export function buildDemoLicenses(parcels: ParcelForLicensing[], seed = 2028): DemoLicense[] {
     const random = mulberry32(seed);
