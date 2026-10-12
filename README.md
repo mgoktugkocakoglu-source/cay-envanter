@@ -87,3 +87,25 @@ npm run export-site -- --province Trabzon --district Of --neighborhood Çatalder
 Müstahsil kuralı: 1/7, müstahsilin tüm bahçelerindeki toplam ruhsat alanı üzerinden. Uydu yalnızca çok
 yüksek güvende (hedefin %120'si, çayın %90'ı gözlenmiş, art arda 2 tarama, ≥1.400 m² çay) alımı otomatik
 açar; alımı kapatma kararı her zaman eksperindir.
+
+### Müstahsil bazlı takip (v2)
+
+Sistemin birimi parsel değil **müstahsil**dir. Her müstahsilin bahçeleri (hisseli parselde kendi alt
+poligonu) birlikte değerlendirilir; 1/7 hedefi müstahsilin ruhsatlı alanı üzerinden hesaplanır.
+
+```bash
+# Sezonlar SIRAYLA çalıştırılır: çakışma hesabı önceki sezonların olay poligonlarını kullanır
+npm run scan-producers -- --province Trabzon --district Of --neighborhood Çataldere --season 2023
+npm run scan-producers -- --province Trabzon --district Of --neighborhood Çataldere --season 2024
+npm run scan-producers -- --province Trabzon --district Of --neighborhood Çataldere --season 2025
+
+# Sezonun bütün bulutsuz sahneleri (müstahsil ekranındaki uydu zaman çizelgesi)
+.venv/Scripts/python py/season_imagery.py --dir data/library/trabzon/of/cataldere --seasons 2023,2024,2025 --all-scenes
+```
+
+Her tarama (≤ 5 gün) için: son 20 günün bulutsuz sahneleri referansla karşılaştırılır, bahçe bazında
+biriken budama güncellenir. Sezon sonunda budama **olay poligonları** çıkarılır; her olayın yeri ve
+**gözlem aralığı** (son değişimsiz gözlem → ilk değişimli gözlem, tespit tarihi) saklanır. Aynı 7 sezonluk
+döngüde daha önce hesaba alınmış yerle çakışan alan "çakışan" olarak ayrılır; hedefe yalnızca
+**yeni alan** sayılır. Sınırı ölçülmemiş hisseli bahçelerdeki budama müstahsile atanmaz
+(`boundary_unresolved`). Uydu alımı yalnızca çok yüksek güvende otomatik açar; kapatma kararı eksperindir.
