@@ -7,7 +7,9 @@ import { initEarthEngine, evaluate } from '../ee/session.ts';
 import { clearScenes, opticalComposite, pruningWindows, relativeDrop } from '../ee/pruning.ts';
 import { NeighborhoodStore } from '../library/store.ts';
 import { buildDemoProducers, type DemoGarden } from '../producers/demo-producers.ts';
-import { CYCLE_SEASONS, evaluateScans, type ScanInput } from '../producers/compliance.ts';
+import { CYCLE_SEASONS } from '../producers/compliance.ts';
+import { evaluateProducerSeason, type GardenSeries } from '../producers/evaluate.ts';
+import { producerLicensedAreaM2, type LicensingRegistry } from '../licensing/registry.ts';
 
 /* `ee` objects are untyped (see src/types/earthengine.d.ts). */
 type EE = any; // eslint-disable-line @typescript-eslint/no-explicit-any
@@ -243,58 +245,21 @@ async function main(): Promise<void> {
     });
     const byId = new Map(gardenOut.map((g) => [g.id, g]));
 
+    // Licensed area per producer: the digital licence register when it exists, else a DEMO
+    // placeholder of the producer's tea area ± 10 % (real values come from ÇAYKUR).
+    const registryPath = join(store.dir, 'licensing', 'registry.json');
+    const registry = existsSync(registryPath) ? (JSON.parse(readFileSync(registryPath, 'utf8')) as LicensingRegistry) : null;
+    if (registry) console.log('Ruhsat alanları: licensing/registry.json');
     let seed = 7;
     const jitter = () => {
         seed = (seed * 16807) % 2147483647;
         return 0.9 + ((seed % 1000) / 1000) * 0.2;
     };
+    const seriesById = new Map<string, GardenSeries>(gardenOut.map((g) => [g.id, g]));
     const producerOut = producers.map((p) => {
-        const own = p.gardenIds.map((id) => byId.get(id)).filter((g): g is NonNullable<typeof g> => !!g);
-        const resolved = own.filter((g) => g.boundaryResolved);
-        const unresolvedOwn = own.filter((g) => !g.boundaryResolved);
-        const teaAreaM2 = own.reduce((s, g) => s + g.teaAreaM2, 0);
-        const resolvedTeaM2 = resolved.reduce((s, g) => s + g.teaAreaM2, 0);
-        const unresolvedTeaShare = teaAreaM2 > 0 ? unresolvedOwn.reduce((s, g) => s + g.teaAreaM2, 0) / teaAreaM2 : 0;
-        // DEMO license area: the producer's tea area ± 10 % (real values come from ÇAYKUR).
-        const licensedAreaM2 = Math.round(Math.max(teaAreaM2, 100) * jitter());
-        const sum = (list: typeof own, pick: (g: (typeof own)[number]) => number) => list.reduce((s, g) => s + pick(g), 0);
-        const inputs: ScanInput[] = dates.map((date, i) => ({
-            date,
-            newObservation: newObservation[i] as boolean,
-            licensedAreaM2,
-            teaAreaM2,
-            grossPrunedM2: sum(resolved, (g) => g.prunedM2[i] ?? 0),
-            reusedM2: sum(resolved, (g) => g.reusedM2[i] ?? 0),
-            unattributedM2: sum(unresolvedOwn, (g) => g.prunedM2[i] ?? 0),
-            observedShare: resolvedTeaM2 > 0 ? Math.min(1, sum(resolved, (g) => g.observedM2[i] ?? 0) / resolvedTeaM2) : 0,
-            unresolvedTeaShare,
-        }));
-        const scans = evaluateScans(inputs);
-        const last = scans.at(-1);
-        const lastObserved = [...scans].reverse().find((s) => s.newObservation) ?? last;
-        return {
-            ...p,
-            licensedAreaM2,
-            teaAreaM2,
-            requiredM2: last?.requiredM2 ?? 0,
-            grossPrunedM2: last?.grossPrunedM2 ?? 0,
-            reusedM2: last?.reusedM2 ?? 0,
-            newPrunedM2: last?.newPrunedM2 ?? 0,
-            unattributedM2: last?.unattributedM2 ?? 0,
-            unobservedM2: Math.round(resolvedTeaM2 * (1 - (lastObserved?.observedShare ?? 0))),
-            remainingM2: last?.remainingM2 ?? 0,
-            unresolvedGardens: unresolvedOwn.length,
-            status: last?.status ?? 'awaiting_observation',
-            autoApprovedAt: scans.find((s) => s.status === 'auto_approved')?.date ?? null,
-            scans: scans.map((s) => ({
-                date: s.date,
-                grossPrunedM2: Math.round(s.grossPrunedM2),
-                newPrunedM2: s.newPrunedM2,
-                observedShare: Math.round(s.observedShare * 1000) / 1000,
-                ratio: s.ratio,
-                status: s.status,
-            })),
-        };
+        const teaAreaM2 = p.gardenIds.reduce((s, id) => s + (byId.get(id)?.teaAreaM2 ?? 0), 0);
+        const licensedAreaM2 = registry ? producerLicensedAreaM2(registry, p.id) : Math.round(Math.max(teaAreaM2, 100) * jitter());
+        return { ...p, ...evaluateProducerSeason(p.gardenIds, seriesById, dates, newObservation, licensedAreaM2) };
     });
 
     const counts = producerOut.reduce<Record<string, number>>((h, p) => ((h[p.status] = (h[p.status] ?? 0) + 1), h), {});

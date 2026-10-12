@@ -109,3 +109,40 @@ biriken budama güncellenir. Sezon sonunda budama **olay poligonları** çıkar�
 döngüde daha önce hesaba alınmış yerle çakışan alan "çakışan" olarak ayrılır; hedefe yalnızca
 **yeni alan** sayılır. Sınırı ölçülmemiş hisseli bahçelerdeki budama müstahsile atanmaz
 (`boundary_unresolved`). Uydu alımı yalnızca çok yüksek güvende otomatik açar; kapatma kararı eksperindir.
+
+## Dijital ruhsat kaydı (DEMO, müstahsil bazlı)
+
+```bash
+# Müstahsil → ruhsat → çaylık alt-poligonu → parsel kaydı; eğim Copernicus DEM'den okunur
+npm run build-licensing -- --province Trabzon --district Of --neighborhood Çataldere
+
+# Siteye paket (v5: envanter + budama + müstahsiller + ruhsat kaydı)
+npm run export-site -- --province Trabzon --district Of --neighborhood Çataldere
+```
+
+`data/library/<il>/<ilçe>/<mahalle>/licensing/registry.json` ÇAYKUR verisi gelene kadar yerine geçen,
+BİLFERA tasarımındaki bütün kayıt sorunlarını kasıtlı olarak içeren deterministik bir demo kayıttır:
+
+- **Ruhsat eşleşme düzeyi** — `exact` (ada/parsel birebir), `historical` (eski pafta/parsel → eski–yeni
+  parsel tablosu `lineage` ile: 22-a yenileme, ifraz, tevhit), `probable` (yalnızca mevki/zilyetlik tarifi;
+  aday parseller), `unmatched` (güncel kadastroda bulunamadı). Yalnızca `exact`/`historical` ruhsatlara
+  alan tahsis edilir; diğerleri `lineage_unresolved` uyuşmazlığıyla bekler.
+- **Çaylık alt-poligonu** — hissedarın parsel dilimi ∩ uydu çay örtüsü (4 m yumuşatılmış, dilime kırpılmış);
+  çay yoksa dilimin kendisi (büyük parselde merkez çevresinde 60 m). Her bahçede üç alan tutulur:
+  `licensedAreaM2` (ruhsattan pro-rata tahsis), `planimetricAreaM2` (izdüşüm), `surfaceAreaM2`
+  (izdüşüm × ortalama 1/cos(eğim), DEM 30 m — teknik tahmin, hukuki alan değil); ayrıca `measuredTeaAreaM2`.
+- **Sınır durumu** — `approved`, `proposed` (hisseli parselde öneri), `boundary_conflict` (öneri komşu
+  hissedarla ≥ 25 m² çakışıyor; `conflicts[]` çakışma poligonunu taşır), `field_check_required`, `unresolved`.
+  Geometri **sürümleri** (`versions[]`, eski çizim → RTK düzeltmesi) saklanır.
+- **Uyuşmazlıklar** — `area_over`/`area_under` (±%15), `no_tea` (hayalet ruhsat), `no_license`,
+  `lineage_unresolved`, `overlap`.
+- **Başvurular** — `new_license`, `area_correction`, `transfer` (vefat/intikal), `boundary_determination`,
+  `parcel_update`; durumlar `DRAFT → DOCUMENTS_PENDING / MATCHING_REQUIRED / GEOMETRY_PROPOSED →
+  BOUNDARY_CONFLICT / UNDER_REVIEW / FIELD_CHECK_REQUIRED → DEMO_APPROVED / RETURNED_FOR_CORRECTION /
+  REJECTED / SUPERSEDED`, belge listesi ve tarihçe ile.
+- **Ruhsatsız çay** — paket, uydu çay yamalarından ruhsat tahsisli alt-poligonları çıkararak (mekânsal fark)
+  `licensing.unlicensedTea` katmanını üretir.
+
+Kayıt varsa `scan-producers` ve `export-site` müstahsilin ruhsat alanını bu kayıttan alır (ruhsatsız
+müstahsil → `no_license`, alım kapalı); sezon sonuçları uyduya dokunmadan `src/producers/evaluate.ts`
+ile yeniden hesaplanır.

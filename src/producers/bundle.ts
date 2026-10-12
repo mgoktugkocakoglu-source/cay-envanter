@@ -12,6 +12,8 @@ import {
     type ProducerStatus,
 } from './compliance.ts';
 import { buildDemoProducers } from './demo-producers.ts';
+import { evaluateProducerSeason, type GardenSeries } from './evaluate.ts';
+import { currentGeometry, producerLicensedAreaM2, type LicensingRegistry } from '../licensing/registry.ts';
 
 type Poly = Polygon | MultiPolygon;
 
@@ -81,6 +83,7 @@ export function loadProducersForBundle(
     parcels: Array<{ key: string; block: string; parcel: string; teaAreaM2: number | null; geometry: Poly }>,
     roundCoords: (g: Geometry) => Geometry,
     imageryBaseUrl: string,
+    registry: LicensingRegistry | null,
 ) {
     const dir = join(neighborhoodDir, 'producers');
     if (!existsSync(dir)) return null;
@@ -90,6 +93,19 @@ export function loadProducersForBundle(
 
     // Same deterministic register the scans used, so garden ids line up.
     const { producers, gardens } = buildDemoProducers(parcels);
+    const resolvedById = new Map(gardens.map((g) => [g.id, g.boundaryResolved]));
+
+    // With a licence register, every season is re-judged offline on the register's licensed
+    // areas (the satellite series never change; the licence side does).
+    if (registry) {
+        for (const s of seasons) {
+            const seriesById = new Map<string, GardenSeries>(s.gardens.map((g) => [g.id, { ...g, boundaryResolved: resolvedById.get(g.id) ?? true }]));
+            s.producers = producers.map((p) => ({
+                ...p,
+                ...evaluateProducerSeason(p.gardenIds, seriesById, s.scanDates, s.newObservation, producerLicensedAreaM2(registry, p.id)),
+            }));
+        }
+    }
     const scenesPath = join(neighborhoodDir, 'pruning', 'imagery', 'scenes', 'index.json');
     const scenes = existsSync(scenesPath) ? (JSON.parse(readFileSync(scenesPath, 'utf8')) as ScenesIndex) : null;
 
@@ -107,21 +123,26 @@ export function loadProducersForBundle(
             code: p.id,
             name: p.name,
             walletNo: p.walletNo,
-            licenseNo: p.licenseNo,
+            // With a register, the producer's licence numbers come from it (empty: no licence).
+            licenseNo: registry ? registry.licenses.filter((l) => l.producerCode === p.id).map((l) => l.code).join(', ') : p.licenseNo,
             gardenCodes: p.gardenIds,
         })),
-        gardens: gardens.map((g) => ({
-            code: g.id,
-            producerCode: g.producerId,
-            parcelKey: g.parcelKey,
-            block: g.block,
-            parcel: g.parcel,
-            holderIndex: g.holderIndex,
-            holderCount: g.holderCount,
-            boundaryResolved: g.boundaryResolved,
-            geometryAreaM2: g.geometryAreaM2,
-            geometry: roundCoords(g.geometry),
-        })),
+        // With a register, the garden's map geometry is its licensed tea sub-polygon (current version).
+        gardens: gardens.map((g) => {
+            const licensed = registry?.gardens.find((x) => x.code === g.id);
+            return {
+                code: g.id,
+                producerCode: g.producerId,
+                parcelKey: g.parcelKey,
+                block: g.block,
+                parcel: g.parcel,
+                holderIndex: g.holderIndex,
+                holderCount: g.holderCount,
+                boundaryResolved: g.boundaryResolved,
+                geometryAreaM2: licensed ? licensed.planimetricAreaM2 : g.geometryAreaM2,
+                geometry: roundCoords(licensed ? currentGeometry(licensed) : g.geometry),
+            };
+        }),
         seasons: seasons.map((s) => ({
             season: s.season,
             calibrated: false,

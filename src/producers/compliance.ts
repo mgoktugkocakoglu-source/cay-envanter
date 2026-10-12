@@ -22,7 +22,8 @@ export type ProducerStatus =
     | 'boundary_unresolved' // a material share of the producer's tea has no resolved garden boundary
     | 'partial' // some pruning seen, clearly below 1/7
     | 'no_trace' // well observed, no pruning seen (yet)
-    | 'awaiting_observation'; // clouds / snow: not enough of the producer's tea observed
+    | 'awaiting_observation' // clouds / snow: not enough of the producer's tea observed
+    | 'no_license'; // no licensed area is allocated to the producer: nothing to judge, no purchase
 
 export const REQUIRED_FRACTION = 1 / 7;
 /** Seasons in the pruning rotation: ground credited within this many past seasons counts as reused. */
@@ -87,11 +88,12 @@ export function evaluateScans(scans: ScanInput[]): ScanResult[] {
         const repeat = scan.reusedM2 >= REPEAT_REVIEW.minM2 && scan.grossPrunedM2 > 0 && scan.reusedM2 / scan.grossPrunedM2 >= REPEAT_REVIEW.minShareOfGross;
         const strong = ratio >= AUTO_APPROVAL.minRatio && scan.observedShare >= AUTO_APPROVAL.minObservedShare && !repeat;
         if (scan.newObservation) confirmations = strong ? confirmations + 1 : 0;
-        if (strong && confirmations >= AUTO_APPROVAL.consecutiveScans && scan.teaAreaM2 >= AUTO_APPROVAL.minTeaAreaM2) {
+        if (strong && scan.licensedAreaM2 > 0 && confirmations >= AUTO_APPROVAL.consecutiveScans && scan.teaAreaM2 >= AUTO_APPROVAL.minTeaAreaM2) {
             approved = true;
         }
         let status: ProducerStatus;
-        if (approved) status = 'auto_approved';
+        if (scan.licensedAreaM2 <= 0) status = 'no_license';
+        else if (approved) status = 'auto_approved';
         else if (repeat) status = 'repeat_pruning_review';
         else if (ratio >= EXPERT_REVIEW_RATIO) status = 'expert_review';
         else if (scan.unresolvedTeaShare >= BOUNDARY_MATERIAL_SHARE) status = 'boundary_unresolved';

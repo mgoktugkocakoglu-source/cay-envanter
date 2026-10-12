@@ -14,7 +14,8 @@
         "detect-tea": "node src/cli/detect-tea.ts",
         "export-site": "node src/cli/export-site.ts",
         "detect-pruning": "node src/cli/detect-pruning.ts",
-        "scan-producers": "node src/cli/scan-producers.ts"
+        "scan-producers": "node src/cli/scan-producers.ts",
+        "build-licensing": "node src/cli/build-licensing.ts"
     },
     "dependencies": {
         "@google/earthengine": "^1.7.47",
