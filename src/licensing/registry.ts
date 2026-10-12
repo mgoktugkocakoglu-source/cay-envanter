@@ -358,8 +358,15 @@ export function buildLicensingRegistry(input: RegistryInputs, seed = 2027): Lice
         const p = parcelByKey.get(parcelKey);
         return p ? `Ada ${p.block} / Parsel ${p.parcel}` : parcelKey;
     };
+    // Random dates are sorted so the file reads chronologically; submission is the first entry.
     const addApplication = (a: Omit<Application, 'code'>) => {
-        applications.push({ code: `DEMO-B-${String(applications.length + 1).padStart(4, '0')}`, ...a });
+        const history = [...a.history].sort((x, y) => x.at.localeCompare(y.at));
+        applications.push({
+            code: `DEMO-B-${String(applications.length + 1).padStart(4, '0')}`,
+            ...a,
+            history,
+            submittedAt: history[0]?.at ?? a.submittedAt,
+        });
     };
 
     for (const producer of input.producers) {
