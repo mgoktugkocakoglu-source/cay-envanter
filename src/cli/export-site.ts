@@ -6,10 +6,11 @@ import { NeighborhoodStore, slugify } from '../library/store.ts';
 import { buildDemoLicenses, type DemoLicense } from '../licensing/demo-licenses.ts';
 import { classify, type InventoryClass } from '../licensing/decision-matrix.ts';
 import type { ParcelProperties } from '../tkgm/types.ts';
+import { loadPruningForBundle } from '../pruning/bundle.ts';
 
 /**
  * Packs one neighborhood's inventory into a single JSON bundle for the cayhesabim site
- * (seeded by its tea-inventory module). Bundle format version 1.
+ * (seeded by its tea-inventory module). Bundle format version 2 (v2 adds the optional pruning block).
  */
 
 interface TeaParcelProperties extends ParcelProperties {
@@ -60,6 +61,8 @@ function main(): void {
     const report = read<{ period: object; model: Record<string, unknown> }>('tea-report.json');
     const summary = read<{ neighborhoodId: number; coveredRatio: number; boundaryAreaM2: number }>('summary.json');
 
+    const pruning = loadPruningForBundle(store.dir, roundCoords);
+
     const licenses = buildDemoLicenses(parcels.map((p) => p.properties));
     const licenseByParcel = new Map(licenses.filter((l) => l.parcelKey).map((l) => [l.parcelKey as string, l]));
 
@@ -87,12 +90,13 @@ function main(): void {
             teaAreaM2: p.teaAreaM2,
             inventoryClass,
             license: license ? licenseView(license) : null,
+            pruning: pruning.parcels.get(p.key) ?? null,
             geometry: roundCoords(geometry),
         };
     });
 
     const bundle = {
-        version: 1,
+        version: 2,
         generatedAt: new Date().toISOString(),
         demoLicenses: true,
         area: {
@@ -110,6 +114,7 @@ function main(): void {
         parcels: bundleParcels,
         teaPatches: patches.map((f) => ({ areaM2: Math.round(f.properties.areaM2), geometry: roundCoords(f.geometry) })),
         unmatchedLicenses: licenses.filter((l) => !l.parcelKey).map(licenseView),
+        pruning: pruning.area,
     };
 
     mkdirSync(values.out, { recursive: true });

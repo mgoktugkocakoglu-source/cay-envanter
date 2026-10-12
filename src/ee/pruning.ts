@@ -9,7 +9,7 @@ type EE = any; // eslint-disable-line @typescript-eslint/no-explicit-any
  * Season `Y` = pruning that starts in November of year Y.
  *  - reference: after the last (autumn) harvest, before pruning — full canopy
  *  - winter:    after the main November–December pruning
- *  - spring:    after the late (March) pruning, before the first flush greens the bushes again
+ *  - spring:    after the late (March) pruning, ending before the first flush (late April) greens the bushes again
  */
 export interface PruningWindows {
     season: string;
@@ -24,7 +24,7 @@ export function pruningWindows(year: number): PruningWindows {
         season: `${year}-${String(next).slice(2)}`,
         reference: [`${year}-10-05`, `${year}-11-10`],
         winter: [`${year}-12-10`, `${next}-02-01`],
-        spring: [`${next}-03-25`, `${next}-04-26`],
+        spring: [`${next}-03-20`, `${next}-04-11`],
     };
 }
 
@@ -33,8 +33,15 @@ const CLEAR_THRESHOLD = 0.6;
 /** NDSI above this = snow. Snow drops NDVI like pruning does, so it must never reach the comparison. */
 const SNOW_NDSI = 0.4;
 
+/**
+ * A scene whose tea median NDVI falls below this cannot show pruning: only a seventh of the
+ * tea is pruned in a season, so a neighbourhood-wide collapse is thin snow, frost or the
+ * low winter sun's terrain shadow (seen in Çataldere in January 2024 and 2026).
+ */
+export const MIN_SCENE_TEA_MEDIAN = 0.55;
+
 /** Median NDVI / NIR / SWIR of clear, snow-free Sentinel-2 pixels in a window, plus the clear-observation count. */
-function opticalComposite(ee: EE, region: EE, [start, end]: [string, string]): EE {
+function opticalComposite(ee: EE, region: EE, teaMask: EE, [start, end]: [string, string]): EE {
     const cloudScore = ee.ImageCollection('GOOGLE/CLOUD_SCORE_PLUS/V1/S2_HARMONIZED');
     const clear = ee
         .ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
@@ -45,12 +52,17 @@ function opticalComposite(ee: EE, region: EE, [start, end]: [string, string]): E
             const scaled = image.select(['B3', 'B4', 'B8', 'B11']).divide(10_000);
             const ndsi = scaled.normalizedDifference(['B3', 'B11']);
             const notSnow = ndsi.lt(SNOW_NDSI).and(image.select('SCL').neq(11));
-            return scaled
+            const bands = scaled
                 .normalizedDifference(['B8', 'B4'])
                 .rename('NDVI')
                 .addBands(scaled.select(['B8', 'B11'], ['NIR', 'SWIR']))
                 .updateMask(image.select('cs_cdf').gte(CLEAR_THRESHOLD).and(notSnow));
-        });
+            const teaMedian = bands.select('NDVI').updateMask(teaMask)
+                .reduceRegion({ reducer: ee.Reducer.median(), geometry: region, scale: 20, maxPixels: 1e9 })
+                .get('NDVI');
+            return bands.set('teaMedian', ee.Algorithms.If(teaMedian, teaMedian, -1));
+        })
+        .filter(ee.Filter.gte('teaMedian', MIN_SCENE_TEA_MEDIAN));
     return clear.median().addBands(clear.select('NDVI').count().rename('obs'));
 }
 
@@ -107,9 +119,9 @@ function relativeDrop(ee: EE, before: EE, after: EE, teaMask: EE, region: EE, fi
 
 /** `fixedThreshold` overrides the data-driven threshold (sensitivity runs). */
 export function buildPruningImages(ee: EE, region: EE, teaMask: EE, windows: PruningWindows, fixedThreshold?: number): PruningImages {
-    const reference = opticalComposite(ee, region, windows.reference);
-    const winter = opticalComposite(ee, region, windows.winter);
-    const spring = opticalComposite(ee, region, windows.spring);
+    const reference = opticalComposite(ee, region, teaMask, windows.reference);
+    const winter = opticalComposite(ee, region, teaMask, windows.winter);
+    const spring = opticalComposite(ee, region, teaMask, windows.spring);
 
     const winterStep = relativeDrop(ee, reference, winter, teaMask, region, fixedThreshold);
     const springStep = relativeDrop(ee, winter, spring, teaMask, region, fixedThreshold);

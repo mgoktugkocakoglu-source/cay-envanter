@@ -4,6 +4,7 @@ import { parseArgs } from 'node:util';
 import type { FeatureCollection, MultiPolygon, Polygon } from 'geojson';
 import { initEarthEngine, evaluate } from '../ee/session.ts';
 import { buildPruningImages, pruningWindows } from '../ee/pruning.ts';
+import { parcelNdviSeries } from '../ee/ndvi-series.ts';
 import { NeighborhoodStore } from '../library/store.ts';
 import { pruningStatus, requiredPrunedM2, type PruningStatus } from '../pruning/compliance.ts';
 
@@ -18,7 +19,7 @@ const USAGE = `
 Kullanım:
   npm run detect-pruning -- --province Trabzon --district Of --neighborhood Çataldere [--seasons 2023,2024,2025]
 
-Sezon Y = Y Kasım'ında başlayan budama: referans 5 Eki–10 Kas, kış 10 Ara–1 Şub, bahar 25 Mar–26 Nis.
+Sezon Y = Y Kasım'ında başlayan budama: referans 5 Eki–10 Kas, kış 10 Ara–1 Şub, bahar 20 Mar–10 Nis.
 `;
 
 interface ParcelSums {
@@ -62,6 +63,7 @@ async function main(): Promise<void> {
             neighborhood: { type: 'string' },
             seasons: { type: 'string', default: '2023,2024,2025' },
             threshold: { type: 'string' },
+            'skip-series': { type: 'boolean', default: false },
             out: { type: 'string', default: 'pruning' },
         },
     });
@@ -139,6 +141,15 @@ async function main(): Promise<void> {
         );
     }
     writeFileSync(join(outDir, 'summary.json'), JSON.stringify(summary, null, 2));
+
+    if (!values['skip-series']) {
+        const years = values.seasons.split(',').map(Number);
+        const start = `${Math.min(...years)}-09-01`;
+        const end = `${Math.max(...years) + 1}-07-01`;
+        console.log(`NDVI zaman serisi ${start} → ${end}…`);
+        const series = await parcelNdviSeries(ee, region, teaMask, parcelCollection, start, end, (line) => console.log(line));
+        writeFileSync(join(outDir, 'ndvi-series.json'), JSON.stringify(series));
+    }
     console.log(`Çıktılar: ${outDir}`);
 }
 
