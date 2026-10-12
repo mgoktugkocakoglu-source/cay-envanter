@@ -108,11 +108,64 @@ def png(image, bbox, path: Path, file_format: str = 'PNG') -> None:
     print(f'  {path.name}: {width}x{height}, {len(data) // 1024} KB')
 
 
+# Scene timeline exports are coarser (~10 m, the data's own resolution) to keep ~40 files a season small.
+SCENE_STEP_DEG = 0.0001
+
+
+def export_all_scenes(region, tea_mask, bbox, folder: Path, years: list[int]) -> None:
+    """Every clear scene of each pruning season (5 Oct – 15 Apr) as a dated JPEG, for the
+    producer screen's satellite timeline (pick any date, compare before/after)."""
+    out = folder / 'pruning' / 'imagery' / 'scenes'
+    out.mkdir(parents=True, exist_ok=True)
+    index = {'bounds': {'west': bbox[0], 'south': bbox[1], 'east': bbox[2], 'north': bbox[3]}, 'seasons': {}}
+    west, south, east, north = bbox
+    width = round((east - west) / SCENE_STEP_DEG)
+    height = round((north - south) / SCENE_STEP_DEG)
+    grid = {'dimensions': {'width': width, 'height': height},
+            'affineTransform': {'scaleX': SCENE_STEP_DEG, 'shearX': 0, 'translateX': west,
+                                'shearY': 0, 'scaleY': -SCENE_STEP_DEG, 'translateY': north},
+            'crsCode': 'EPSG:4326'}
+    for year in years:
+        season = f'{year}-{str(year + 1)[2:]}'
+        col = clear_collection(region, tea_mask, f'{year}-10-05', f'{year + 1}-04-16')
+
+        def describe(image):
+            valid = image.select('NDVI').mask().updateMask(tea_mask).reduceRegion(
+                reducer=ee.Reducer.mean(), geometry=region, scale=20, maxPixels=1e9).values().get(0)
+            return ee.Feature(None, {'id': image.get('system:index'), 'date': image.date().format('YYYY-MM-dd'),
+                                     'teaVisible': valid, 'teaMedian': image.get('teaMedian')})
+
+        scenes = ee.FeatureCollection(col.map(describe)).getInfo()['features']
+        by_date = {}
+        for f in scenes:
+            props = f['properties']
+            if (props['teaVisible'] or 0) < 0.3:
+                continue
+            kept = by_date.get(props['date'])
+            if not kept or (props['teaVisible'] or 0) > (kept['teaVisible'] or 0):
+                by_date[props['date']] = props
+        entries = []
+        print(f'Sezon {season}: {len(by_date)} sahne')
+        for date, props in sorted(by_date.items()):
+            image = ee.Image(col.filter(ee.Filter.eq('system:index', props['id'])).first())
+            file = f'{season}/{date}.jpg'
+            (out / season).mkdir(exist_ok=True)
+            data = ee.data.computePixels({'expression': stretched_rgb(image, region), 'fileFormat': 'JPEG', 'grid': grid})
+            (out / file).write_bytes(data)
+            entries.append({'date': date, 'file': file, 'teaVisible': round(props['teaVisible'] or 0, 3),
+                            'teaMedianNdvi': round(props['teaMedian'] or 0, 3)})
+            print(f'  {date}: {len(data) // 1024} KB, çayın %{round((props["teaVisible"] or 0) * 100)} görünür')
+        index['seasons'][season] = entries
+    (out / 'index.json').write_text(json.dumps(index, indent=2), encoding='utf-8')
+    print(f'Çıktı: {out}')
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument('--dir', required=True, help='neighbourhood library folder')
     parser.add_argument('--seasons', default='2023,2024,2025')
     parser.add_argument('--key', default='secrets/ee-key.json')
+    parser.add_argument('--all-scenes', action='store_true', help='export every clear scene of each season (timeline)')
     args = parser.parse_args()
 
     init_ee(Path(args.key))
@@ -126,6 +179,10 @@ def main() -> None:
             max(c[0] for c in coords) + pad, max(c[1] for c in coords) + pad)
     tea_mask = ee.Image(0).byte().paint(
         ee.FeatureCollection([ee.Feature(ee.Geometry(f['geometry'])) for f in patches['features']]), 1).eq(1)
+
+    if args.all_scenes:
+        export_all_scenes(region, tea_mask, bbox, folder, [int(y) for y in args.seasons.split(',')])
+        return
 
     out = folder / 'pruning' / 'imagery'
     out.mkdir(parents=True, exist_ok=True)

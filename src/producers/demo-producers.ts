@@ -20,6 +20,12 @@ export interface DemoGarden {
     /** 1-based holder index inside a shared parcel, and how many holders the parcel has. */
     holderIndex: number;
     holderCount: number;
+    /**
+     * False when the holder's slice inside a shared parcel is not surveyed yet: pruning there
+     * cannot be attributed to this producer (BOUNDARY_UNRESOLVED). In the demo, one shared parcel
+     * in five is left unresolved on purpose; the slice geometry is still kept for the map.
+     */
+    boundaryResolved: boolean;
     geometry: Polygon | MultiPolygon;
     geometryAreaM2: number;
 }
@@ -111,6 +117,7 @@ export function buildDemoProducers(parcels: TeaParcelInput[], seed = 2026): { pr
         const parcelArea = area(feature(parcel.geometry));
         const maxHolders = Math.max(1, Math.min(4, Math.floor(parcelArea / MIN_SLICE_M2)));
         const holders = Math.min(weighted(random, HOLDER_WEIGHTS), maxHolders);
+        const boundaryResolved = holders === 1 || random() >= 0.2;
         splitEqualStrips(parcel.geometry, holders).forEach((geometry, i) => {
             gardens.push({
                 id: `DEMO-B-${String(gardens.length + 1).padStart(4, '0')}`,
@@ -120,6 +127,7 @@ export function buildDemoProducers(parcels: TeaParcelInput[], seed = 2026): { pr
                 parcel: parcel.parcel,
                 holderIndex: i + 1,
                 holderCount: holders,
+                boundaryResolved,
                 geometry,
                 geometryAreaM2: Math.round(area(feature(geometry))),
             });

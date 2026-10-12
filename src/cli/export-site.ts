@@ -1,4 +1,4 @@
-import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import type { FeatureCollection, Geometry, MultiPolygon, Polygon } from 'geojson';
@@ -11,7 +11,8 @@ import { loadProducersForBundle } from '../producers/bundle.ts';
 
 /**
  * Packs one neighborhood's inventory into a single JSON bundle for the cayhesabim site
- * (seeded by its tea-inventory module). Bundle format version 3 (v2 adds pruning, v3 adds producers + gardens).
+ * (seeded by its tea-inventory module). Bundle format version 4 (v2 pruning, v3 producers, v4 multi-season
+ * producers with event polygons, boundary status and the scene timeline).
  */
 
 interface TeaParcelProperties extends ParcelProperties {
@@ -100,7 +101,7 @@ function main(): void {
     });
 
     const bundle = {
-        version: 3,
+        version: 4,
         generatedAt: new Date().toISOString(),
         demoLicenses: true,
         area: {
@@ -119,7 +120,12 @@ function main(): void {
         teaPatches: patches.map((f) => ({ areaM2: Math.round(f.properties.areaM2), geometry: roundCoords(f.geometry) })),
         unmatchedLicenses: licenses.filter((l) => !l.parcelKey).map(licenseView),
         pruning: pruning.area,
-        producers: loadProducersForBundle(store.dir, roundCoords),
+        producers: loadProducersForBundle(
+            store.dir,
+            parcels.map((f) => ({ ...f.properties, geometry: f.geometry })),
+            roundCoords,
+            imageryBaseUrl,
+        ),
     };
 
     mkdirSync(values.out, { recursive: true });
@@ -138,6 +144,19 @@ function main(): void {
             copyFileSync(join(store.dir, 'pruning', 'imagery', file), join(imageryOut, file));
         }
         console.log(`Sezon görüntüleri (${files.length}): ${imageryOut} → sitede apps/web/public${imageryBaseUrl}`);
+        const scenesIndex = join(store.dir, 'pruning', 'imagery', 'scenes', 'index.json');
+        if (existsSync(scenesIndex)) {
+            const scenes = JSON.parse(readFileSync(scenesIndex, 'utf8')) as { seasons: Record<string, Array<{ file: string }>> };
+            let count = 0;
+            for (const entries of Object.values(scenes.seasons)) {
+                for (const { file } of entries) {
+                    mkdirSync(join(imageryOut, 'scenes', file.split('/')[0] as string), { recursive: true });
+                    copyFileSync(join(store.dir, 'pruning', 'imagery', 'scenes', file), join(imageryOut, 'scenes', file));
+                    count++;
+                }
+            }
+            console.log(`Sahne zaman çizelgesi: ${count} görüntü`);
+        }
     }
 }
 
