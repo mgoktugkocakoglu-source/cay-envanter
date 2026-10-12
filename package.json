@@ -13,7 +13,8 @@
         "ee:check": "node src/cli/ee-check.ts",
         "detect-tea": "node src/cli/detect-tea.ts",
         "export-site": "node src/cli/export-site.ts",
-        "detect-pruning": "node src/cli/detect-pruning.ts"
+        "detect-pruning": "node src/cli/detect-pruning.ts",
+        "scan-producers": "node src/cli/scan-producers.ts"
     },
     "dependencies": {
         "@google/earthengine": "^1.7.47",

@@ -7,10 +7,11 @@ import { buildDemoLicenses, type DemoLicense } from '../licensing/demo-licenses.
 import { classify, type InventoryClass } from '../licensing/decision-matrix.ts';
 import type { ParcelProperties } from '../tkgm/types.ts';
 import { loadPruningForBundle, loadSeasonImagery } from '../pruning/bundle.ts';
+import { loadProducersForBundle } from '../producers/bundle.ts';
 
 /**
  * Packs one neighborhood's inventory into a single JSON bundle for the cayhesabim site
- * (seeded by its tea-inventory module). Bundle format version 2 (v2 adds the optional pruning block).
+ * (seeded by its tea-inventory module). Bundle format version 3 (v2 adds pruning, v3 adds producers + gardens).
  */
 
 interface TeaParcelProperties extends ParcelProperties {
@@ -99,7 +100,7 @@ function main(): void {
     });
 
     const bundle = {
-        version: 2,
+        version: 3,
         generatedAt: new Date().toISOString(),
         demoLicenses: true,
         area: {
@@ -118,6 +119,7 @@ function main(): void {
         teaPatches: patches.map((f) => ({ areaM2: Math.round(f.properties.areaM2), geometry: roundCoords(f.geometry) })),
         unmatchedLicenses: licenses.filter((l) => !l.parcelKey).map(licenseView),
         pruning: pruning.area,
+        producers: loadProducersForBundle(store.dir, roundCoords),
     };
 
     mkdirSync(values.out, { recursive: true });

@@ -67,3 +67,23 @@ TKGM'nin açık servisinde "mahalledeki tüm parseller" sorgusu yoktur. Toplayı
 Varsayılan hız saniyede en fazla 1 istektir (`--min-interval-ms`, alt sınır 500). Bu açık servis pilot
 ölçek içindir; 55 ilçenin tamamı için ÇAYKUR–TKGM kurumsal protokolü (MEGSİS WFS) gerekir.
 `TkgmClient` bu geçişte değiştirilecek tek bileşendir.
+
+## Budama takibi (Sentinel, kalibre edilmedi)
+
+```bash
+# Parsel bazında sezon karşılaştırması + NDVI eğrileri (referans Eki–Kas, kış Ara–Oca, bahar Mar–Nis)
+npm run detect-pruning -- --province Trabzon --district Of --neighborhood Çataldere --seasons 2023,2024,2025
+
+# Sezon görüntüleri (her dönemin en temiz tek sahnesi + değişim katmanı), Python
+.venv/Scripts/python py/season_imagery.py --dir data/library/trabzon/of/cataldere --seasons 2023,2024,2025
+
+# Müstahsil bazında 5 günlük taramalar (DEMO müstahsil–bahçe kaydı ile)
+npm run scan-producers -- --province Trabzon --district Of --neighborhood Çataldere --season 2025 --every 5
+
+# Siteye paket (v3: envanter + budama + müstahsiller) ve görüntüler
+npm run export-site -- --province Trabzon --district Of --neighborhood Çataldere
+```
+
+Müstahsil kuralı: 1/7, müstahsilin tüm bahçelerindeki toplam ruhsat alanı üzerinden. Uydu yalnızca çok
+yüksek güvende (hedefin %120'si, çayın %90'ı gözlenmiş, art arda 2 tarama, ≥1.400 m² çay) alımı otomatik
+açar; alımı kapatma kararı her zaman eksperindir.

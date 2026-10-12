@@ -40,8 +40,8 @@ const SNOW_NDSI = 0.4;
  */
 export const MIN_SCENE_TEA_MEDIAN = 0.55;
 
-/** Median NDVI / NIR / SWIR of clear, snow-free Sentinel-2 pixels in a window, plus the clear-observation count. */
-function opticalComposite(ee: EE, region: EE, teaMask: EE, [start, end]: [string, string]): EE {
+/** Clear, snow-free Sentinel-2 scenes of a window (NDVI/NIR/SWIR), neighbourhood-wide collapses screened out. */
+export function clearScenes(ee: EE, region: EE, teaMask: EE, [start, end]: [string, string]): EE {
     const cloudScore = ee.ImageCollection('GOOGLE/CLOUD_SCORE_PLUS/V1/S2_HARMONIZED');
     const clear = ee
         .ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
@@ -60,9 +60,15 @@ function opticalComposite(ee: EE, region: EE, teaMask: EE, [start, end]: [string
             const teaMedian = bands.select('NDVI').updateMask(teaMask)
                 .reduceRegion({ reducer: ee.Reducer.median(), geometry: region, scale: 20, maxPixels: 1e9 })
                 .get('NDVI');
-            return bands.set('teaMedian', ee.Algorithms.If(teaMedian, teaMedian, -1));
+            return bands.copyProperties(image, ['system:time_start']).set('teaMedian', ee.Algorithms.If(teaMedian, teaMedian, -1));
         })
         .filter(ee.Filter.gte('teaMedian', MIN_SCENE_TEA_MEDIAN));
+    return clear;
+}
+
+/** Median NDVI / NIR / SWIR of a window's clear scenes, plus the clear-observation count. */
+export function opticalComposite(ee: EE, region: EE, teaMask: EE, window: [string, string]): EE {
+    const clear = clearScenes(ee, region, teaMask, window);
     return clear.median().addBands(clear.select('NDVI').count().rename('obs'));
 }
 
@@ -98,7 +104,7 @@ export interface PruningImages {
  * relative to a fully pruned pixel (the 95th percentile drop), so a pixel that is a quarter
  * pruned counts as 25 m² — the sub-pixel estimate the 1/7 rule needs on small parcels.
  */
-function relativeDrop(ee: EE, before: EE, after: EE, teaMask: EE, region: EE, fixedThreshold?: number) {
+export function relativeDrop(ee: EE, before: EE, after: EE, teaMask: EE, region: EE, fixedThreshold?: number) {
     const valid = before.select('obs').gt(0).and(after.select('obs').gt(0)).and(teaMask);
     const delta = after.select('NDVI').subtract(before.select('NDVI')).updateMask(valid).rename('d');
     const dist = delta.reduceRegion({
