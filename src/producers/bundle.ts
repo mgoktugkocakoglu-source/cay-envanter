@@ -80,11 +80,12 @@ interface ScenesIndex {
  */
 export function loadProducersForBundle(
     neighborhoodDir: string,
-    parcels: Array<{ key: string; block: string; parcel: string; teaAreaM2: number | null; geometry: Poly }>,
+    parcels: Array<{ key: string; block: string; parcel: string; locality?: string; teaAreaM2: number | null; geometry: Poly }>,
     roundCoords: (g: Geometry) => Geometry,
     imageryBaseUrl: string,
     registry: LicensingRegistry | null,
 ) {
+    const localityByParcel = new Map(parcels.map((p) => [p.key, p.locality ?? '']));
     const dir = join(neighborhoodDir, 'producers');
     if (!existsSync(dir)) return null;
     const files = readdirSync(dir).filter((n) => /^season-\d{4}-\d{2}\.json$/.test(n)).sort();
@@ -136,6 +137,8 @@ export function loadProducersForBundle(
                 parcelKey: g.parcelKey,
                 block: g.block,
                 parcel: g.parcel,
+                // TKGM locality (mevkii) of the parcel: the level below the neighbourhood.
+                locality: localityByParcel.get(g.parcelKey) ?? '',
                 holderIndex: g.holderIndex,
                 holderCount: g.holderCount,
                 boundaryResolved: g.boundaryResolved,
