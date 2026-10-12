@@ -43,7 +43,18 @@ export interface ParcelPruning {
  * the shared date axis and neighbourhood median for the curves, and per-parcel results.
  * `calibrated: false` until field-labelled seasons set the drop threshold.
  */
-export function loadPruningForBundle(neighborhoodDir: string, roundCoords: (g: Geometry) => Geometry) {
+/** Season imagery written by py/season_imagery.py: PNG overlays + their lon/lat bounds. */
+export interface SeasonImagery {
+    bounds: { west: number; south: number; east: number; north: number };
+    seasons: Record<string, Record<string, { file: string; scenes?: number; window?: [string, string] }>>;
+}
+
+export function loadSeasonImagery(neighborhoodDir: string): SeasonImagery | null {
+    const path = join(neighborhoodDir, 'pruning', 'imagery', 'index.json');
+    return existsSync(path) ? (JSON.parse(readFileSync(path, 'utf8')) as SeasonImagery) : null;
+}
+
+export function loadPruningForBundle(neighborhoodDir: string, roundCoords: (g: Geometry) => Geometry, imageryBaseUrl: string) {
     const dir = join(neighborhoodDir, 'pruning');
     if (!existsSync(dir)) {
         return { area: null, parcels: new Map<string, ParcelPruning>() };
@@ -85,6 +96,11 @@ export function loadPruningForBundle(neighborhoodDir: string, roundCoords: (g: G
                 patches: patches.features.map((f) => ({ areaM2: Math.round(f.properties.areaM2), geometry: roundCoords(f.geometry) })),
             };
         }),
+        // Sentinel-2 overlays per season window; files are served by the site under imageryBaseUrl.
+        imagery: (() => {
+            const imagery = loadSeasonImagery(neighborhoodDir);
+            return imagery ? { baseUrl: imageryBaseUrl, ...imagery } : null;
+        })(),
         series: series
             ? { dates: series.dates, neighborhoodMedian: series.neighborhoodMedian, validTeaShare: series.validTeaShare }
             : null,

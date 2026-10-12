@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import type { FeatureCollection, Geometry, MultiPolygon, Polygon } from 'geojson';
@@ -6,7 +6,7 @@ import { NeighborhoodStore, slugify } from '../library/store.ts';
 import { buildDemoLicenses, type DemoLicense } from '../licensing/demo-licenses.ts';
 import { classify, type InventoryClass } from '../licensing/decision-matrix.ts';
 import type { ParcelProperties } from '../tkgm/types.ts';
-import { loadPruningForBundle } from '../pruning/bundle.ts';
+import { loadPruningForBundle, loadSeasonImagery } from '../pruning/bundle.ts';
 
 /**
  * Packs one neighborhood's inventory into a single JSON bundle for the cayhesabim site
@@ -61,7 +61,10 @@ function main(): void {
     const report = read<{ period: object; model: Record<string, unknown> }>('tea-report.json');
     const summary = read<{ neighborhoodId: number; coveredRatio: number; boundaryAreaM2: number }>('summary.json');
 
-    const pruning = loadPruningForBundle(store.dir, roundCoords);
+    const code = [meta.province, meta.district, meta.neighborhood].map(slugify).join('-');
+    // The site serves season imagery as static files (apps/web/public/inventory-imagery/<code>/).
+    const imageryBaseUrl = `/inventory-imagery/${code}/`;
+    const pruning = loadPruningForBundle(store.dir, roundCoords, imageryBaseUrl);
 
     const licenses = buildDemoLicenses(parcels.map((p) => p.properties));
     const licenseByParcel = new Map(licenses.filter((l) => l.parcelKey).map((l) => [l.parcelKey as string, l]));
@@ -100,7 +103,7 @@ function main(): void {
         generatedAt: new Date().toISOString(),
         demoLicenses: true,
         area: {
-            code: [meta.province, meta.district, meta.neighborhood].map(slugify).join('-'),
+            code,
             province: meta.province,
             district: meta.district,
             neighborhood: meta.neighborhood.replace(/\s+mah\.?$/i, ''),
@@ -123,6 +126,17 @@ function main(): void {
     console.log(`Sınıflar: ${JSON.stringify(classCounts)}`);
     console.log(`Demo ruhsat: ${licenses.length} (eşleşmeyen ${bundle.unmatchedLicenses.length})`);
     console.log(`Paket: ${outPath}`);
+
+    const imagery = loadSeasonImagery(store.dir);
+    if (imagery) {
+        const imageryOut = join(values.out, 'imagery', code);
+        mkdirSync(imageryOut, { recursive: true });
+        const files = Object.values(imagery.seasons).flatMap((layers) => Object.values(layers).map((l) => l.file));
+        for (const file of files) {
+            copyFileSync(join(store.dir, 'pruning', 'imagery', file), join(imageryOut, file));
+        }
+        console.log(`Sezon görüntüleri (${files.length}): ${imageryOut} → sitede apps/web/public${imageryBaseUrl}`);
+    }
 }
 
 main();
