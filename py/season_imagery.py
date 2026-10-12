@@ -19,8 +19,8 @@ import ee
 CLEAR_THRESHOLD = 0.6
 SNOW_NDSI = 0.4
 MIN_SCENE_TEA_MEDIAN = 0.55
-# ~8 m in degrees at 41°N: a little finer than the 10 m data, so pixels stay crisp when zoomed.
-STEP_DEG = 0.00008
+# ~5 m in degrees at 41°N: finer than the 10 m data so the bicubic resampling reads smooth when zoomed.
+STEP_DEG = 0.00005
 # Change layer: relative NDVI drop shown from 0.10 (faint, near the detector threshold) to 0.35 (strong).
 CHANGE_MIN, CHANGE_MAX = 0.10, 0.35
 
@@ -50,7 +50,7 @@ def clear_collection(region, tea_mask, start: str, end: str):
             image.select('cs_cdf').gte(CLEAR_THRESHOLD).And(not_snow))
         tea_median = bands.select('NDVI').updateMask(tea_mask).reduceRegion(
             reducer=ee.Reducer.median(), geometry=region, scale=20, maxPixels=1e9).get('NDVI')
-        return bands.set('teaMedian', ee.Algorithms.If(tea_median, tea_median, -1))
+        return bands.copyProperties(image, ['system:time_start']).set('teaMedian', ee.Algorithms.If(tea_median, tea_median, -1))
 
     return (ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED').filterBounds(region).filterDate(start, end)
             .linkCollection(cloud_score, ['cs_cdf']).map(prepare)
@@ -63,13 +63,40 @@ def relative_change(before, after, tea_mask, region):
     return delta.subtract(ee.Number(median))
 
 
-def png(image, bbox, path: Path) -> None:
+def best_scene(collection, region, tea_mask, start: str, end: str):
+    """The single scene that saw most of the tea clearly (ties: closest to the window's middle).
+
+    One sharp scene with an exact date reads far better than a median of several, which smears
+    the small misregistrations between scenes and mixes their shadows.
+    """
+    middle = ee.Date(start).advance(ee.Date(end).difference(ee.Date(start), 'day').divide(2), 'day')
+
+    def score(image):
+        # Share of the TEA pixels that are clear and snow-free in this scene.
+        valid = image.select('NDVI').mask().updateMask(tea_mask).reduceRegion(
+            reducer=ee.Reducer.mean(), geometry=region, scale=20, maxPixels=1e9).values().get(0)
+        days = ee.Number(image.date().difference(middle, 'day')).abs()
+        return image.set('validTea', valid, 'rank', ee.Number(valid).multiply(1000).subtract(days))
+
+    return ee.Image(collection.map(score).sort('rank', False).first())
+
+
+def stretched_rgb(image, region):
+    """True colour with a 2–98 % stretch of this scene: low winter sun no longer reads as black."""
+    rgb = image.select(['B4', 'B3', 'B2']).resample('bicubic')
+    stats = rgb.reduceRegion(reducer=ee.Reducer.percentile([2, 98]), geometry=region, scale=20, maxPixels=1e9)
+    lo = [ee.Number(stats.get(f'{b}_p2')) for b in ('B4', 'B3', 'B2')]
+    hi = [ee.Number(stats.get(f'{b}_p98')) for b in ('B4', 'B3', 'B2')]
+    return rgb.visualize(min=ee.List(lo), max=ee.List(hi), gamma=1.1)
+
+
+def png(image, bbox, path: Path, file_format: str = 'PNG') -> None:
     west, south, east, north = bbox
     width = round((east - west) / STEP_DEG)
     height = round((north - south) / STEP_DEG)
     data = ee.data.computePixels({
         'expression': image,
-        'fileFormat': 'PNG',
+        'fileFormat': file_format,
         'grid': {
             'dimensions': {'width': width, 'height': height},
             'affineTransform': {'scaleX': STEP_DEG, 'shearX': 0, 'translateX': west,
@@ -110,10 +137,14 @@ def main() -> None:
         layers = {}
         for name in ('reference', 'winter', 'spring'):
             col = clear_collection(region, tea_mask, *w[name])
+            # The change layer compares composites (as the detector does); the photo shows one real scene.
             composites[name] = col.median()
-            file = f"{w['season']}-{name}.png"
-            png(composites[name].visualize(bands=['B4', 'B3', 'B2'], min=0.0, max=0.25, gamma=1.2), bbox, out / file)
-            layers[name] = {'file': file, 'scenes': col.size().getInfo(), 'window': list(w[name])}
+            scene = best_scene(col, region, tea_mask, *w[name])
+            info = ee.Dictionary({'date': scene.date().format('YYYY-MM-dd'), 'valid': scene.get('validTea')}).getInfo()
+            file = f"{w['season']}-{name}.jpg"
+            png(stretched_rgb(scene, region), bbox, out / file, 'JPEG')
+            layers[name] = {'file': file, 'scenes': col.size().getInfo(), 'window': list(w[name]),
+                            'sceneDate': info['date'], 'teaVisible': round(info['valid'] or 0, 3)}
         # Pruning signal: the stronger of the winter and March drops, on tea pixels only.
         drop = (relative_change(composites['reference'], composites['winter'], tea_mask, region)
                 .min(relative_change(composites['winter'], composites['spring'], tea_mask, region))
