@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import type { FeatureCollection, Geometry } from 'geojson';
-import { REQUIRED_FRACTION, type PruningStatus } from './compliance.ts';
+import { REQUIRED_FRACTION, pruningStatus, type PruningStatus } from './compliance.ts';
 import { MIN_SCENE_TEA_MEDIAN } from '../ee/pruning.ts';
 import type { NdviSeries } from '../ee/ndvi-series.ts';
 
@@ -59,7 +59,8 @@ export function loadPruningForBundle(neighborhoodDir: string, roundCoords: (g: G
     for (const season of seasonFiles) {
         for (const { key, ...rest } of season.parcels) {
             const entry = parcels.get(key) ?? { seasons: {}, ndvi: series?.parcels[key] ?? [] };
-            entry.seasons[season.season] = rest;
+            // Status re-derived from the stored areas, so a rule change does not need a new Earth Engine run.
+            entry.seasons[season.season] = { ...rest, status: pruningStatus(rest) };
             parcels.set(key, entry);
         }
     }
@@ -69,13 +70,18 @@ export function loadPruningForBundle(neighborhoodDir: string, roundCoords: (g: G
         method: 'Sentinel-2, aynı budama sezonu içinde referans (Eki–Kas), kış (Ara–Oca) ve bahar (Mar–Nis) dönemlerinin karşılaştırılması',
         requiredFraction: REQUIRED_FRACTION,
         minSceneTeaMedian: MIN_SCENE_TEA_MEDIAN,
-        seasons: seasonFiles.map(({ parcels: _rows, ...season }) => {
+        seasons: seasonFiles.map(({ parcels: rows, ...season }) => {
             const patchPath = join(dir, `pruned-patches-${season.season}.geojson`);
             const patches = existsSync(patchPath)
                 ? JSON.parse(readFileSync(patchPath, 'utf8')) as FeatureCollection<Geometry, { areaM2: number }>
                 : { features: [] };
+            const statusCounts = Object.fromEntries(
+                (['pruned', 'partial', 'no_trace', 'insufficient_observation', 'too_small'] as PruningStatus[])
+                    .map((s) => [s, rows.filter((row) => pruningStatus(row) === s).length]),
+            );
             return {
                 ...season,
+                statusCounts,
                 patches: patches.features.map((f) => ({ areaM2: Math.round(f.properties.areaM2), geometry: roundCoords(f.geometry) })),
             };
         }),
