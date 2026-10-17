@@ -127,6 +127,26 @@ Optik kaydı olmayan bahçelerde yalnız-radar adayı için çok daha yüksek ba
 aday — 10 m GRD 0,1 ha bahçede çoğu budamayı ayırt edemez; koherans (SLC) hattı 2. fazdır.
 Paket: `export-site` dosya varsa isteğe bağlı `radar` bloğunu ekler; site yoksa aynen çalışır.
 
+### Koherans kanalı (Sentinel-1 SLC burst çiftleri, SNAP)
+
+```bash
+# 1) Mahalleyi kapsayan burst'leri bul (ASF); Earthdata girişi secrets/earthdata.txt
+.venv/Scripts/python py/s1_bursts.py --dir data/library/trabzon/of/cataldere --season 2025
+# 2) Burst'leri indir (ASF boyutuyla doğrulanır) ve tarih tarih SAFE'e çevir (burst2safe; SNAP ham burst TIFF'i okumaz)
+.venv/Scripts/python py/s1_bursts.py --dir ... --season 2025 --download --orbits 43 --min-cover 0.2 --dest data/s1/cataldere/safe/43
+burst2safe <granule...> --output-dir data/s1/cataldere/safe/43        # her tarih için (burst2stack S1C yörüngelerinde hata veriyor)
+# 3) Ardışık 6/12 günlük çiftlerin koheransı (SNAP gpt, çift başına ~1–1,6 dk) ve bahçe serileri
+.venv/Scripts/python py/coherence/run.py --dir data/library/trabzon/of/cataldere --season 2025 --orbits 43,123
+# 4) detect-pruning-radar koherans dosyasını otomatik alır
+```
+
+Gereksinim: ESA SNAP (`C:\Program Files\esa-snap`, gpt 11 GB heap), Earthdata hesabı + ASF uygulama onayı,
+sezon başına ~15 GB (`data/s1/`, git dışı). Koherans kanalı geri saçılımla **birleştirilmez**, kendi
+başına sınıflanır (bilgi taşımayan kanal bilgi taşıyanı sulandırmasın diye); ikisinden biri teyit edebilir.
+Çataldere 2025-26 bulgusu: 4×2 pencerede (~9×28 m) 0,1 ha bahçelerde koherans artışı yok (z −0,5…0,6, 87 kayıt
+nötr); 6 günlük kış çiftlerinde hava kaynaklı dekorelasyon baskın. Denenecekler: 10×3 pencere, yalnız 12
+günlük çiftler, saha etiketleriyle kalibrasyon.
+
 ## Dijital ruhsat kaydı (DEMO, müstahsil bazlı)
 
 ```bash
