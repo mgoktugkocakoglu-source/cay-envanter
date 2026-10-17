@@ -45,6 +45,7 @@ def main() -> None:
     ap.add_argument("--min-cover", type=float, default=0.2, help="skip bursts covering less than this share of the neighbourhood")
     ap.add_argument("--limit", type=int, default=0, help="download at most N files (test)")
     ap.add_argument("--out", default="data/s1", help="download root")
+    ap.add_argument("--dest", default="", help="explicit download directory (e.g. the burst2stack output dir, so it skips its own flaky download)")
     args = ap.parse_args()
 
     lib = Path(args.dir)
@@ -102,6 +103,7 @@ def main() -> None:
                 "burstId": b.get("fullBurstID"),
                 "subswath": b.get("subswath"),
                 "sizeMB": round(float(p.get("bytes") or 0) / 1e6),
+                "bytes": int(float(p.get("bytes") or 0)),
                 "url": p["url"],
                 # Burst metadata (annotation XML) SNAP needs next to the TIFF.
                 "xmlUrl": next((u for u in p.get("additionalUrls") or [] if u.endswith(".xml")), None),
@@ -123,11 +125,24 @@ def main() -> None:
 
     if not args.download:
         return
+    if args.dest:
+        out_dir = Path(args.dest)
+        out_dir.mkdir(parents=True, exist_ok=True)
     user, pw = read_credentials(Path("secrets/earthdata.txt"))
     session = asf.ASFSession().auth_with_creds(user, pw)
     orbits = {int(o) for o in args.orbits.split(",") if o.strip()}
     wanted = [b for b in bursts if (not orbits or b["relativeOrbit"] in orbits) and (b["cover"] or 0) >= args.min_cover]
-    todo = [b for b in wanted if not (out_dir / b["fileName"]).exists()]
+    # ASF's `bytes` is the raw burst size; the delivered GeoTIFF is ~22 KB larger. A shorter file
+    # is an interrupted download (a stub), a larger one is complete.
+    def complete(b: dict) -> bool:
+        f = out_dir / b["fileName"]
+        return f.exists() and (not b["bytes"] or f.stat().st_size >= b["bytes"])
+
+    for b in wanted:
+        f = out_dir / b["fileName"]
+        if f.exists() and not complete(b):
+            f.unlink()
+    todo = [b for b in wanted if not complete(b)]
     if args.limit:
         todo = todo[: args.limit]
     print(f"İndiriliyor: {len(todo)} dosya (~{sum(b['sizeMB'] for b in todo) / 1000:.1f} GB) → {out_dir}")

@@ -67,6 +67,9 @@ export interface RadarResult {
     cohRise: number | null;
     persistence: number | null;
     z: number | null;
+    /** Coherence channel on its own (pooled over passes). */
+    zCoh?: number | null;
+    cohClass?: RadarClass;
     passes: PassResult[];
 }
 
@@ -183,8 +186,9 @@ function judgePass(s: RelativeSeries, lastNoChangeAt: string | null, firstChange
     const cohNoise = robustSigma((s.cohRel ?? []).filter((v): v is number => v !== null && v !== undefined));
     const cohRise = cmb === null || cma === null ? null : cma - cmb;
     const zCoh = cohRise === null || cohNoise === null || cohBefore.length < RADAR_RULES.minObs || cohAfter.length < RADAR_RULES.minObs ? null : cohRise / (cohNoise * Math.sqrt(1 / cohBefore.length + 1 / cohAfter.length));
-    const zs = [zVh, zCoh].filter((v): v is number => v !== null);
-    const z = zs.length === 0 ? null : zs.reduce((a, b) => a + b, 0) / Math.sqrt(zs.length);
+    // The pass verdict rests on backscatter; coherence is kept as its own channel (see combine):
+    // pooling an uninformative channel would only dilute the informative one.
+    const z = zVh;
     return {
         pass: s.pass,
         beforeObs: before.length,
@@ -212,28 +216,40 @@ export function scoreEvent(passes: RelativeSeries[], lastNoChangeAt: string | nu
 
 /** Pools the passes (independent looks at the same ground) and classifies the evidence. */
 function combine(results: PassResult[], minObs: number, zConfirm: number, persistenceMin: number): RadarResult | null {
-    const usable = results.filter((r) => r.z !== null && ((r.beforeObs >= minObs && r.afterObs >= minObs && r.vhDropDb !== null) || r.zCoh !== null));
-    if (usable.length === 0) return null;
-    const w = usable.map((r) => Math.max(Math.min(r.beforeObs, r.afterObs), Math.min(r.cohBeforeObs, r.cohAfterObs)));
-    const wavg = (pick: (r: PassResult) => number | null) => {
-        const pairs = usable.map((r, i) => [pick(r), w[i]!] as const).filter((p): p is readonly [number, number] => p[0] !== null);
+    const usable = results.filter((r) => r.beforeObs >= minObs && r.afterObs >= minObs && r.vhDropDb !== null && r.z !== null);
+    const cohUsable = results.filter((r) => r.zCoh !== null && r.cohRise !== null);
+    if (usable.length === 0 && cohUsable.length === 0) return null;
+    const wavgOf = (list: PassResult[], weight: (r: PassResult) => number, pick: (r: PassResult) => number | null) => {
+        const pairs = list.map((r) => [pick(r), weight(r)] as const).filter((p): p is readonly [number, number] => p[0] !== null);
         return pairs.length ? pairs.reduce((s, [v, ww]) => s + v * ww, 0) / pairs.reduce((s, [, ww]) => s + ww, 0) : null;
     };
-    const vhDrop = wavg((r) => r.vhDropDb);
-    const ratioDrop = wavg((r) => r.ratioDropDb);
-    const cohRise = wavg((r) => r.cohRise);
-    const persistence = wavg((r) => r.persistence) ?? 0;
-    // Stouffer: independent z-scores add in quadrature.
-    const z = usable.reduce((s, r) => s + (r.z as number), 0) / Math.sqrt(usable.length);
-    // The magnitude guard: at least one physical signal must be big enough to mean canopy removal.
-    const magnitude = (vhDrop ?? 0) >= RADAR_RULES.vhDropDb || (cohRise ?? 0) >= COH_RISE_MIN;
-    const positive = (vhDrop ?? 0) > 0 || (cohRise ?? 0) > 0;
+    const wBack = (r: PassResult) => Math.min(r.beforeObs, r.afterObs);
+    const wCoh = (r: PassResult) => Math.min(r.cohBeforeObs, r.cohAfterObs);
+    const vhDrop = wavgOf(usable, wBack, (r) => r.vhDropDb);
+    const ratioDrop = wavgOf(usable, wBack, (r) => r.ratioDropDb);
+    const persistence = wavgOf(usable, wBack, (r) => r.persistence) ?? 0;
+    const cohRise = wavgOf(cohUsable, wCoh, (r) => r.cohRise);
+    // Stouffer per channel: independent passes add in quadrature. Channels are NOT pooled with
+    // each other — an uninformative channel must not dilute an informative one.
+    const zBack = usable.length ? usable.reduce((s, r) => s + (r.z as number), 0) / Math.sqrt(usable.length) : null;
+    const zCoh = cohUsable.length ? cohUsable.reduce((s, r) => s + (r.zCoh as number), 0) / Math.sqrt(cohUsable.length) : null;
+    const verdict = (z: number | null, magnitudeOk: boolean, positive: boolean, persistenceOk: boolean): RadarClass => {
+        if (z === null) return 'no_data';
+        if (z >= zConfirm && magnitudeOk && persistenceOk) return 'confirmed';
+        if (z >= RADAR_RULES.zWeak && positive) return 'weak';
+        if (z <= RADAR_RULES.zContradict) return 'contradicted';
+        return 'neutral';
+    };
+    const backClass = verdict(zBack, (vhDrop ?? 0) >= RADAR_RULES.vhDropDb, (vhDrop ?? 0) > 0, persistence >= persistenceMin);
+    const cohClass = verdict(zCoh, (cohRise ?? 0) >= COH_RISE_MIN, (cohRise ?? 0) > 0, true);
+    // Either channel may confirm on its own; a contradiction stands only when nothing confirms.
+    const rank: Record<RadarClass, number> = { confirmed: 4, weak: 3, neutral: 2, no_data: 1, contradicted: 0 };
     let cls: RadarClass;
-    if (z >= zConfirm && magnitude && (persistence >= persistenceMin || vhDrop === null)) cls = 'confirmed';
-    else if (z >= RADAR_RULES.zWeak && positive) cls = 'weak';
-    else if (z <= RADAR_RULES.zContradict) cls = 'contradicted';
-    else cls = 'neutral';
-    const score = cls === 'confirmed' ? Math.min(1, z / (zConfirm * 2)) + 0.5 : cls === 'weak' ? Math.min(0.5, z / (2 * zConfirm)) : 0;
+    if (backClass === 'confirmed' || cohClass === 'confirmed') cls = 'confirmed';
+    else if (backClass === 'contradicted' || cohClass === 'contradicted') cls = 'contradicted';
+    else cls = rank[backClass] >= rank[cohClass] ? backClass : cohClass;
+    const z = cls === cohClass && cls !== backClass ? zCoh : (zBack ?? zCoh);
+    const score = cls === 'confirmed' ? Math.min(1, (z ?? 0) / (zConfirm * 2)) + 0.5 : cls === 'weak' ? Math.min(0.5, (z ?? 0) / (2 * zConfirm)) : 0;
     return {
         class: cls,
         score: Math.round(Math.min(1, score) * 100) / 100,
@@ -242,6 +258,8 @@ function combine(results: PassResult[], minObs: number, zConfirm: number, persis
         cohRise: cohRise === null ? null : Math.round(cohRise * 1000) / 1000,
         persistence: r2(persistence),
         z: r2(z),
+        zCoh: r2(zCoh),
+        cohClass,
         passes: results,
     };
 }
