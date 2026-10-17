@@ -22,6 +22,7 @@ export function loadRadarForBundle(neighborhoodDir: string) {
             season: s.season,
             window: s.window,
             passes: s.passes,
+            coherence: s.coherence ?? null,
             series: s.series,
             records: s.records.map((r) => ({ recordId: r.recordId, gardenCode: r.gardenId, radar: r.radar })),
             radarOnly: s.radarOnly.map((r) => ({ gardenCode: r.gardenId, date: r.date, vhDropDb: r.vhDropDb, persistence: r.persistence, z: r.z })),
