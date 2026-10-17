@@ -8,7 +8,15 @@ import { NeighborhoodStore } from '../library/store.ts';
 import { buildDemoProducers } from '../producers/demo-producers.ts';
 import { currentGeometry, type LicensingRegistry } from '../licensing/registry.ts';
 import { backscatterSeries, type OrbitPass, type PassSeries } from '../radar/series.ts';
-import { RADAR_RULES, radarOnlyCandidate, relativeSeries, scoreEvent, type RadarResult, type RelativeSeries } from '../radar/score.ts';
+import { RADAR_RULES, radarOnlyCandidate, relativeCoherence, relativeSeries, scoreEvent, type RadarResult, type RelativeSeries } from '../radar/score.ts';
+
+/** Output of py/coherence/run.py: per-pass burst-pair coherence averaged per garden. */
+interface CoherenceFile {
+    season: string;
+    cohWin: [number, number];
+    passes: Array<{ pass: OrbitPass; relativeOrbit: number; burstId: string; pairs: Array<[string, string]> }>;
+    gardens: Record<string, Record<string, Array<number | null>>>;
+}
 
 type Poly = Polygon | MultiPolygon;
 
@@ -32,9 +40,11 @@ export interface RadarSeasonFile {
     season: string;
     rules: typeof RADAR_RULES;
     window: [string, string];
-    passes: Array<{ pass: OrbitPass; relativeOrbit: number; dates: string[] }>;
-    /** Per garden: relative VH / ratio series per pass (for the site's sparkline). */
-    series: Record<string, Array<{ pass: OrbitPass; vhRel: Array<number | null>; ratioRel: Array<number | null> }>>;
+    passes: Array<{ pass: OrbitPass; relativeOrbit: number; dates: string[]; cohDates?: string[] }>;
+    /** Coherence (SNAP burst pairs) when py/coherence/run.py has run for the season. */
+    coherence: { cohWin: [number, number]; pairs: Record<OrbitPass, number> } | null;
+    /** Per garden: relative VH / ratio (and coherence) series per pass (for the site's sparkline). */
+    series: Record<string, Array<{ pass: OrbitPass; vhRel: Array<number | null>; ratioRel: Array<number | null>; cohRel?: Array<number | null> }>>;
     records: Array<{ recordId: string; gardenId: string; radar: RadarResult }>;
     radarOnly: Array<{ gardenId: string; date: string; vhDropDb: number; persistence: number; z: number }>;
 }
@@ -82,6 +92,27 @@ async function main(): Promise<void> {
     if (passes.length === 0) throw new Error('Sentinel-1 sahnesi bulunamadı.');
 
     const relative = passes.map((p) => relativeSeries(p));
+
+    // Coherence channel (optional): neighbourhood-relative pair coherence joins the pass series.
+    const cohPath = join(store.dir, 'pruning-radar', `coherence-${windows.season}.json`);
+    const coherence = existsSync(cohPath) ? (JSON.parse(readFileSync(cohPath, 'utf8')) as CoherenceFile) : null;
+    const cohDatesByPass = new Map<OrbitPass, string[]>();
+    if (coherence) {
+        for (const cp of coherence.passes) {
+            const byGarden: Record<string, Array<number | null>> = {};
+            for (const [id, perPass] of Object.entries(coherence.gardens)) byGarden[id] = perPass[cp.pass] ?? [];
+            const rel = relativeCoherence(cp.pairs, byGarden);
+            const target = relative[passes.findIndex((p) => p.pass === cp.pass)];
+            if (!target) continue;
+            for (const [id, r] of Object.entries(rel)) {
+                if (target[id]) Object.assign(target[id], r);
+            }
+            cohDatesByPass.set(cp.pass, cp.pairs.map(([, d2]) => d2));
+            console.log(`Koherans ${cp.pass}: ${cp.pairs.length} çift (yörünge ${cp.relativeOrbit}, pencere ${coherence.cohWin.join('×')})`);
+        }
+    } else {
+        console.log('Koherans dosyası yok (py/coherence/run.py); yalnız geri saçılım kullanılıyor.');
+    }
     const seriesOf = (id: string): RelativeSeries[] => relative.map((r) => r[id]).filter((s): s is RelativeSeries => !!s);
 
     const records: RadarSeasonFile['records'] = [];
@@ -104,8 +135,11 @@ async function main(): Promise<void> {
         season: windows.season,
         rules: RADAR_RULES,
         window,
-        passes: passes.map((p) => ({ pass: p.pass, relativeOrbit: p.relativeOrbit, dates: p.dates })),
-        series: Object.fromEntries(gardens.map((g) => [g.id, seriesOf(g.id).map((s) => ({ pass: s.pass, vhRel: s.vhRel, ratioRel: s.ratioRel }))])),
+        passes: passes.map((p) => ({ pass: p.pass, relativeOrbit: p.relativeOrbit, dates: p.dates, cohDates: cohDatesByPass.get(p.pass) })),
+        coherence: coherence
+            ? { cohWin: coherence.cohWin, pairs: Object.fromEntries(coherence.passes.map((cp) => [cp.pass, cp.pairs.length])) as Record<OrbitPass, number> }
+            : null,
+        series: Object.fromEntries(gardens.map((g) => [g.id, seriesOf(g.id).map((s) => ({ pass: s.pass, vhRel: s.vhRel, ratioRel: s.ratioRel, cohRel: s.cohRel }))])),
         records,
         radarOnly,
     };

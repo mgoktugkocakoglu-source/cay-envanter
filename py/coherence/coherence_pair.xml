@@ -1,0 +1,98 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  SNAP graph: 6/12-day interferometric coherence of one Sentinel-1 burst pair, terrain-corrected
+  to 10 m and clipped to a neighbourhood. Variables (${...}) are filled by py/coherence/run.py.
+  Coherence window 4 (range) x 1 (azimuth) ~ 10 m x 14 m: noisy per pixel, averaged per garden later.
+-->
+<graph id="BurstCoherence">
+  <version>1.0</version>
+
+  <node id="ReadMaster">
+    <operator>Read</operator>
+    <sources/>
+    <parameters><file>${master}</file></parameters>
+  </node>
+  <node id="ReadSlave">
+    <operator>Read</operator>
+    <sources/>
+    <parameters><file>${slave}</file></parameters>
+  </node>
+
+  <node id="OrbitMaster">
+    <operator>Apply-Orbit-File</operator>
+    <sources><sourceProduct refid="ReadMaster"/></sources>
+    <parameters><orbitType>Sentinel Precise (Auto Download)</orbitType><polyDegree>3</polyDegree><continueOnFail>true</continueOnFail></parameters>
+  </node>
+  <node id="OrbitSlave">
+    <operator>Apply-Orbit-File</operator>
+    <sources><sourceProduct refid="ReadSlave"/></sources>
+    <parameters><orbitType>Sentinel Precise (Auto Download)</orbitType><polyDegree>3</polyDegree><continueOnFail>true</continueOnFail></parameters>
+  </node>
+
+  <node id="BackGeocoding">
+    <operator>Back-Geocoding</operator>
+    <sources><sourceProduct refid="OrbitMaster"/><sourceProduct.1 refid="OrbitSlave"/></sources>
+    <parameters>
+      <demName>Copernicus 30m Global DEM</demName>
+      <demResamplingMethod>BILINEAR_INTERPOLATION</demResamplingMethod>
+      <resamplingType>BISINC_5_POINT_INTERPOLATION</resamplingType>
+      <maskOutAreaWithoutElevation>false</maskOutAreaWithoutElevation>
+      <outputRangeAzimuthOffset>false</outputRangeAzimuthOffset>
+      <outputDerampDemodPhase>false</outputDerampDemodPhase>
+      <disableReramp>false</disableReramp>
+    </parameters>
+  </node>
+
+  <node id="Coherence">
+    <operator>Coherence</operator>
+    <sources><sourceProduct refid="BackGeocoding"/></sources>
+    <parameters>
+      <cohWinRg>${cohWinRg}</cohWinRg>
+      <cohWinAz>${cohWinAz}</cohWinAz>
+      <subtractFlatEarthPhase>true</subtractFlatEarthPhase>
+      <srpPolynomialDegree>5</srpPolynomialDegree>
+      <srpNumberPoints>501</srpNumberPoints>
+      <orbitDegree>3</orbitDegree>
+      <squarePixel>false</squarePixel>
+      <subtractTopographicPhase>true</subtractTopographicPhase>
+      <demName>Copernicus 30m Global DEM</demName>
+      <singleMaster>true</singleMaster>
+    </parameters>
+  </node>
+
+  <node id="Deburst">
+    <operator>TOPSAR-Deburst</operator>
+    <sources><sourceProduct refid="Coherence"/></sources>
+    <parameters/>
+  </node>
+
+  <!-- Clip in radar geometry first: terrain-correcting the whole 80 km burst footprint is wasted work. -->
+  <node id="Subset">
+    <operator>Subset</operator>
+    <sources><sourceProduct refid="Deburst"/></sources>
+    <parameters>
+      <geoRegion>${wkt}</geoRegion>
+      <copyMetadata>true</copyMetadata>
+    </parameters>
+  </node>
+
+  <node id="TerrainCorrection">
+    <operator>Terrain-Correction</operator>
+    <sources><sourceProduct refid="Subset"/></sources>
+    <parameters>
+      <demName>Copernicus 30m Global DEM</demName>
+      <demResamplingMethod>BILINEAR_INTERPOLATION</demResamplingMethod>
+      <imgResamplingMethod>BILINEAR_INTERPOLATION</imgResamplingMethod>
+      <pixelSpacingInMeter>10.0</pixelSpacingInMeter>
+      <mapProjection>WGS84(DD)</mapProjection>
+      <nodataValueAtSea>false</nodataValueAtSea>
+      <saveSelectedSourceBand>true</saveSelectedSourceBand>
+    </parameters>
+  </node>
+
+  <node id="Write">
+    <operator>Write</operator>
+    <sources><sourceProduct refid="TerrainCorrection"/></sources>
+    <parameters><file>${output}</file><formatName>GeoTIFF</formatName></parameters>
+  </node>
+</graph>

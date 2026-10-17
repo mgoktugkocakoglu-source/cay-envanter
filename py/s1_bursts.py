@@ -103,6 +103,8 @@ def main() -> None:
                 "subswath": b.get("subswath"),
                 "sizeMB": round(float(p.get("bytes") or 0) / 1e6),
                 "url": p["url"],
+                # Burst metadata (annotation XML) SNAP needs next to the TIFF.
+                "xmlUrl": next((u for u in p.get("additionalUrls") or [] if u.endswith(".xml")), None),
             }
         )
     bursts.sort(key=lambda x: (x["pass"], x["date"]))
@@ -129,7 +131,20 @@ def main() -> None:
     if args.limit:
         todo = todo[: args.limit]
     print(f"İndiriliyor: {len(todo)} dosya (~{sum(b['sizeMB'] for b in todo) / 1000:.1f} GB) → {out_dir}")
-    asf.download_urls(urls=[b["url"] for b in todo], path=str(out_dir), session=session, processes=3)
+    # ASF burst URLs all end in "<n>.tiff": name each file by its burst id, and fetch the XML too.
+    for i, b in enumerate(todo, 1):
+        for attempt in range(3):
+            try:
+                asf.download_url(b["url"], path=str(out_dir), filename=b["fileName"], session=session)
+                if b["xmlUrl"]:
+                    asf.download_url(b["xmlUrl"], path=str(out_dir), filename=b["fileName"].replace(".tiff", ".xml"), session=session)
+                break
+            except Exception as err:  # noqa: BLE001
+                if attempt == 2:
+                    raise
+                print(f"  {b['fileName']}: yeniden ({err.__class__.__name__})")
+                time.sleep(5)
+        print(f"  {i}/{len(todo)} {b['fileName']}", flush=True)
     print("Bitti.")
 
 
