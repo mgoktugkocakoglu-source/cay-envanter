@@ -110,6 +110,23 @@ döngüde daha önce hesaba alınmış yerle çakışan alan "çakışan" olarak
 **yeni alan** sayılır. Sınırı ölçülmemiş hisseli bahçelerdeki budama müstahsile atanmaz
 (`boundary_unresolved`). Uydu alımı yalnızca çok yüksek güvende otomatik açar; kapatma kararı eksperindir.
 
+## Radar teyidi (ayrı modül, Sentinel-1 GRD — çayır biçme tespiti yöntemi)
+
+```bash
+# Optik taramaya dokunmaz; o sezonun kayıtlarına radar teyidi yazar
+npm run detect-pruning-radar -- --province Trabzon --district Of --neighborhood Çataldere --season 2025
+```
+
+`pruning-radar/season-<yyyy-yy>.json`: bahçe bazında, yörünge yönüne göre ayrı (çıkış/iniş) VV/VH
+serileri; komşuluğun aynı tarihteki medyanı çıkarılarak göreli hale getirilir. Her optik kayıt için
+değişim penceresinin 48 gün öncesi ile 60 gün sonrası karşılaştırılır; düşüş bahçenin kendi benek
+gürültüsüne (sağlam σ) göre z-skoruna çevrilir, yörüngeler Stouffer ile birleştirilir:
+`confirmed` (z ≥ 2,5, ≥ 0,8 dB, kalıcılık ≥ %60) · `weak` · `neutral` · `contradicted` (z ≤ −2,5) · `no_data`.
+Optik kaydı olmayan bahçelerde yalnız-radar adayı için çok daha yüksek bar (z ≥ 4, ≥ 5 gözlem).
+Çataldere 2025-26: 109 kayıttan 4 teyitli, 14 zayıf, 62 nötr, 7 çelişkili, 22 verisiz; 2 yalnız-radar
+aday — 10 m GRD 0,1 ha bahçede çoğu budamayı ayırt edemez; koherans (SLC) hattı 2. fazdır.
+Paket: `export-site` dosya varsa isteğe bağlı `radar` bloğunu ekler; site yoksa aynen çalışır.
+
 ## Dijital ruhsat kaydı (DEMO, müstahsil bazlı)
 
 ```bash
