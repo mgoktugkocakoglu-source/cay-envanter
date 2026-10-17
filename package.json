@@ -15,7 +15,8 @@
         "export-site": "node src/cli/export-site.ts",
         "detect-pruning": "node src/cli/detect-pruning.ts",
         "scan-producers": "node src/cli/scan-producers.ts",
-        "build-licensing": "node src/cli/build-licensing.ts"
+        "build-licensing": "node src/cli/build-licensing.ts",
+        "detect-pruning-radar": "node src/cli/detect-pruning-radar.ts"
     },
     "dependencies": {
         "@google/earthengine": "^1.7.47",

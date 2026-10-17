@@ -9,6 +9,7 @@ import { currentGeometry, parcelLicenseView, type LicensingRegistry, type MatchL
 import type { ParcelProperties } from '../tkgm/types.ts';
 import { loadPruningForBundle, loadSeasonImagery } from '../pruning/bundle.ts';
 import { loadProducersForBundle } from '../producers/bundle.ts';
+import { loadRadarForBundle } from '../radar/bundle.ts';
 
 /**
  * Packs one neighborhood's inventory into a single JSON bundle for the cayhesabim site
@@ -174,6 +175,8 @@ function main(): void {
             imageryBaseUrl,
             registry,
         ),
+        // Optional: Sentinel-1 confirmation of the optical pruning records (separate radar module).
+        radar: loadRadarForBundle(store.dir),
         licensing: {
             demo: true,
             generatedAt: registry.generatedAt,
@@ -196,6 +199,7 @@ function main(): void {
     writeFileSync(outPath, JSON.stringify(bundle));
     console.log(`Sınıflar: ${JSON.stringify(classCounts)}`);
     console.log(`Ruhsat kaydı: ${registry.licenses.length} ruhsat, ${registry.gardens.length} bahçe, ${registry.applications.length} başvuru; ruhsatsız çay ${Math.round(unlicensed.reduce((s, u) => s + u.areaM2, 0) / 1000)} da (${unlicensed.length} alan)`);
+    console.log(`Radar teyidi: ${bundle.radar ? bundle.radar.seasons.map((s) => `${s.season} (${s.records.length} kayıt)`).join(', ') : 'yok'}`);
     console.log(`Paket: ${outPath}`);
 
     const imagery = loadSeasonImagery(store.dir);
