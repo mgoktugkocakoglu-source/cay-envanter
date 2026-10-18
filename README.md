@@ -147,6 +147,33 @@ başına sınıflanır (bilgi taşımayan kanal bilgi taşıyanı sulandırması
 nötr); 6 günlük kış çiftlerinde hava kaynaklı dekorelasyon baskın. Denenecekler: 10×3 pencere, yalnız 12
 günlük çiftler, saha etiketleriyle kalibrasyon.
 
+## Çok-sensör budama kararı (füzyon modülü)
+
+```bash
+# Bahçe + optik değişim yaması birimleri; S2 NDVI/NBR + S1 VH (2 yörünge) + koherans; 2 günde bir tarama taklidi
+npm run fuse-pruning -- --province Trabzon --district Of --neighborhood Çataldere --season 2025 --every 2 [--refetch]
+node scripts/fusion-synthetic.ts     # sentetik doğrulama: derin / hafif / geçici / yalnız optik / değişimsiz / bulutlu
+```
+
+`pruning-fusion/season-<yyyy-yy>.json` — "denklem" (`src/fusion/model.ts`):
+1. Her kanal komşuluğa göreli (tarih medyanı çıkarılır): hava, mevsim, kar herkesi birlikte oynatır.
+2. Aday değişim tarihi t₀ (Eki 15–Oca 31, Şub 15–Nis 10) için kanal basamağı δ = işaret·(sonra − önce),
+   z = δ / (σ·√(1/n_önce + 1/n_sonra)); σ bahçenin kendi sağlam gürültüsü (ardışık farkların MAD'ı).
+3. Büyüklük kapısı (derin budama): NDVI/NBR ≥ 0,12, VH ≥ 1 dB, koherans ≥ 0,06.
+4. Kalıcılık: t₀+25 gün sonrası ve son iki gözlem erken basamağın ≥ %50'sini korumalı; z bununla çarpılır
+   (gölge/kar/don geri döner, budama dönmez). Erken gözlem basamağı göstermiyorsa t₀ erken → kalıcılık 0.
+5. Optik kanallar ortalanır (korelasyonlu), yörüngeler ve sensörler Stouffer ile birleşir (ağırlık optik 1,
+   radar 0,9, koherans 0,2). En iyi t₀ seçilir; ~50 aday tarih gürültüyü |z|≈2,3'e şişirdiği için eşikler
+   olası 2,8 / kesin 3,5.
+6. **Budandı** = optik VE radar aynı t₀'da büyüklük + kalıcılık şartlarını sağlıyor, birleşik z ≥ 3,5;
+   **olası** = tek birincil sensör; **belirsiz** = zayıf ya da geri dönen; **budama yok** = ≥ 12 gözlemle hiçbir sinyal.
+7. Tarama taklidi: her 2 günde bir yalnız o güne kadarki gözlemlerle karar; ilk "olası" ve ilk "kesin" tarihleri.
+   Müstahsil: kesin budanan birim alanı (yama ise yama) ruhsat alanının 1/7'siyle karşılaştırılır.
+
+Çataldere 2025-26 (kalibre edilmedi): 344 bahçede 4 kesin, 69 olası (43 yalnız optik, 26 yalnız radar),
+173 belirsiz, 98 budama yok; müstahsil: 3 tam, 42 kısmen, 47 belirsiz, 8 görülmedi, 36 ruhsatsız.
+Sonraki kaldıraçlar: saha etiketleriyle eşik kalibrasyonu, 50 cm optik, S1'de 3×3 çoklu bakış.
+
 ## Dijital ruhsat kaydı (DEMO, müstahsil bazlı)
 
 ```bash
