@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import type { Feature, FeatureCollection, MultiPolygon, Polygon } from 'geojson';
-import { area as turfArea, difference, feature, featureCollection, union } from '@turf/turf';
+import { area as turfArea, difference, feature, featureCollection, intersect, union } from '@turf/turf';
 import { initEarthEngine } from '../ee/session.ts';
 import { pruningWindows } from '../ee/pruning.ts';
 import { NeighborhoodStore } from '../library/store.ts';
@@ -48,6 +48,17 @@ export interface FusionGarden {
     /** Which unit carried the verdict: the whole garden or the optical change patch inside it. */
     unit: 'garden' | 'patch';
     unitAreaM2: number;
+    unitGeometry: Poly;
+    /**
+     * The 7-season rule: ground already pruned in an earlier season of the cycle does not count
+     * again. Overlap of this unit with earlier seasons' pruned units, with the evidence.
+     */
+    repeat: {
+        reusedM2: number;
+        reusedShare: number;
+        countedM2: number;
+        evidence: Array<{ season: string; overlapM2: number; class: FusionClass }>;
+    } | null;
     verdict: FusionVerdict;
     detectedAt: string | null;
     likelyAt: string | null;
@@ -72,6 +83,11 @@ export interface FusionProducer {
     requiredM2: number;
     prunedAreaM2: number;
     likelyAreaM2: number;
+    /** Area counted toward the 1/7: confirmed + likely units, minus ground reused from the cycle. */
+    countedM2: number;
+    reusedM2: number;
+    /** What is still missing against the 1/7 (0 when met). */
+    shortfallM2: number;
     gardens: number;
     prunedGardens: string[];
     likelyGardens: string[];
@@ -109,14 +125,20 @@ export interface FusionSeasonFile {
 }
 
 export const DECISION_POLICY = {
-    /** Likely gardens may count toward the 1/7 for an automatic opening when this strong and persisting. */
-    likelyMinZ: 4.0,
+    /** "Likely" units count toward the 1/7 like confirmed ones (they keep their own label on screen). */
+    likelyCounts: true,
     /** Pruned area above this multiple of the 1/7 target is suspicious (clearing, not pruning). */
     overPrunedRatio: 3.0,
-    /** Reused share of an optical event (same ground credited within the 7-season cycle) that is an anomaly. */
-    repeatShare: 0.5,
-    /** Anomalies that send the file to an expert; the others are notes shown next to the automatic decision. */
-    blocking: ['sensors_contradict', 'repeat_pruning', 'boundary_conflict', 'unlicensed_pruning', 'over_pruned'] as FusionAnomaly[],
+    /** Seasons in the pruning rotation: ground pruned within this many earlier seasons does not count again. */
+    cycleSeasons: 7,
+    /** Reused share of a unit that is flagged as repeat pruning (always subtracted, flagged above this). */
+    repeatShare: 0.2,
+    /**
+     * Anomalies that send the file to an expert; the others (repeat pruning, licence-area mismatch,
+     * unresolved share boundary) are notes: repeat pruning is subtracted automatically and the
+     * shortfall is written, no expert needed.
+     */
+    blocking: ['sensors_contradict', 'boundary_conflict', 'unlicensed_pruning', 'over_pruned'] as FusionAnomaly[],
     /** Smallest free tea patch judged on its own (m²). */
     minUnassignedM2: 300,
 } as const;
@@ -265,13 +287,34 @@ async function main(): Promise<void> {
 
     const scanFrom = `${year}-11-01`;
     const scanTo = `${year + 1}-04-30`;
+    // Earlier seasons of the cycle: their pruned / likely units are the ground that must not be
+    // credited again (ÇAYKUR's 1/7 rotates over seven seasons).
+    const previousUnits = new Map<string, Array<{ season: string; geometry: Poly; class: FusionClass }>>();
+    for (let y = year - DECISION_POLICY.cycleSeasons + 1; y < year; y++) {
+        const prevSeason = pruningWindows(y).season;
+        const prevPath = join(outDir, `season-${prevSeason}.json`);
+        if (!existsSync(prevPath)) continue;
+        const prev = JSON.parse(readFileSync(prevPath, 'utf8')) as { gardens: Array<{ id: string; unitGeometry?: Poly; verdict: { class: FusionClass } }> };
+        let n = 0;
+        for (const pg of prev.gardens) {
+            if (!pg.unitGeometry || (pg.verdict.class !== 'pruned' && pg.verdict.class !== 'likely')) continue;
+            previousUnits.set(pg.id, [...(previousUnits.get(pg.id) ?? []), { season: prevSeason, geometry: pg.unitGeometry, class: pg.verdict.class }]);
+            n++;
+        }
+        console.log(`Önceki sezon ${prevSeason}: ${n} budanmış/olası birim (tekrar budama kontrolü)`);
+    }
+    const overlapM2 = (a: Poly, b: Poly): number => {
+        const hit = intersect(featureCollection([feature(a), feature(b)]));
+        return hit ? turfArea(hit) : 0;
+    };
+
     console.log('Bahçeler değerlendiriliyor…');
     const rank: Record<FusionClass, number> = { pruned: 4, likely: 3, unclear: 2, not_pruned: 1, no_data: 0 };
     const outGardens: FusionGarden[] = gardens.map((g) => {
         // Garden as a whole, and — when the optical scan drew a change patch — that patch alone.
-        const candidates: Array<{ unit: 'garden' | 'patch'; series: ChannelSeries[]; areaM2: number }> = [{ unit: 'garden', series: seriesOf(g.id), areaM2: g.areaM2 }];
+        const candidates: Array<{ unit: 'garden' | 'patch'; series: ChannelSeries[]; areaM2: number; geometry: Poly }> = [{ unit: 'garden', series: seriesOf(g.id), areaM2: g.areaM2, geometry: g.geometry }];
         const patch = patches.get(g.id);
-        if (patch) candidates.push({ unit: 'patch', series: seriesOf(`${g.id}#patch`), areaM2: patch.areaM2 });
+        if (patch) candidates.push({ unit: 'patch', series: seriesOf(`${g.id}#patch`), areaM2: patch.areaM2, geometry: patch.geometry });
         const judged = candidates.map((c) => ({ ...c, verdict: judge(c.series, scanTo) }));
         const best = judged.sort((a, b) => rank[b.verdict.class] - rank[a.verdict.class] || (b.verdict.z ?? 0) - (a.verdict.z ?? 0))[0]!;
         const timeline = scanTimeline(best.series, scanFrom, scanTo, every);
@@ -279,6 +322,14 @@ async function main(): Promise<void> {
         // are the first scans that reached the verdict the full season finally supports.
         const finalPruned = best.verdict.class === 'pruned';
         const finalLikely = finalPruned || best.verdict.class === 'likely';
+        // Repeat check against the cycle's earlier pruned ground in this garden.
+        let repeat: FusionGarden['repeat'] = null;
+        if (finalLikely) {
+            const earlier = previousUnits.get(g.id) ?? [];
+            const evidence = earlier.map((e) => ({ season: e.season, overlapM2: Math.round(overlapM2(best.geometry, e.geometry)), class: e.class })).filter((e) => e.overlapM2 >= 20);
+            const reusedM2 = Math.min(best.areaM2, evidence.reduce((s, e) => s + e.overlapM2, 0));
+            repeat = { reusedM2: Math.round(reusedM2), reusedShare: best.areaM2 > 0 ? Math.round((reusedM2 / best.areaM2) * 1000) / 1000 : 0, countedM2: Math.round(best.areaM2 - reusedM2), evidence };
+        }
         return {
             id: g.id,
             producerId: g.producerId,
@@ -287,6 +338,8 @@ async function main(): Promise<void> {
             licensedAreaM2: g.licensedAreaM2,
             unit: best.unit,
             unitAreaM2: Math.round(best.areaM2),
+            unitGeometry: best.geometry,
+            repeat,
             verdict: best.verdict,
             detectedAt: finalPruned ? timeline.detectedAt : null,
             likelyAt: finalLikely ? timeline.likelyAt : null,
@@ -309,39 +362,43 @@ async function main(): Promise<void> {
 
     // Producer: pruned area against the 1/7 of the licensed area, then the purchase decision.
     const gardenById = new Map(outGardens.map((g) => [g.id, g]));
-    const strongLikely = (g: FusionGarden) => g.verdict.class === 'likely' && (g.verdict.z ?? 0) >= DECISION_POLICY.likelyMinZ && g.verdict.groups.flatMap((x) => x.channels).some((c) => (c.persistence ?? 0) >= 0.5);
     const outProducers: FusionProducer[] = producers.map((p) => {
         const own = p.gardenIds.map((id) => gardenById.get(id)).filter((g): g is FusionGarden => !!g);
         const licensed = own.reduce((s, g) => s + (g.licensedAreaM2 ?? 0), 0);
         const required = licensed / 7;
         const pruned = own.filter((g) => g.verdict.class === 'pruned');
         const likely = own.filter((g) => g.verdict.class === 'likely');
-        // The pruned area is the unit that carried the verdict (the patch when only part was cut).
+        // The pruned area is the unit that carried the verdict (the patch when only part was cut);
+        // what counts toward the 1/7 is that area minus the ground already credited in the cycle.
         const prunedArea = pruned.reduce((s, g) => s + g.unitAreaM2, 0);
         const likelyArea = likely.reduce((s, g) => s + g.unitAreaM2, 0);
-        const strongArea = likely.filter(strongLikely).reduce((s, g) => s + g.unitAreaM2, 0);
+        const credited = DECISION_POLICY.likelyCounts ? [...pruned, ...likely] : pruned;
+        const reused = credited.reduce((s, g) => s + (g.repeat?.reusedM2 ?? 0), 0);
+        const counted = credited.reduce((s, g) => s + (g.repeat?.countedM2 ?? g.unitAreaM2), 0);
+        const shortfall = Math.max(0, required - counted);
         let status: ProducerFusionStatus;
         if (licensed <= 0) status = 'no_license';
-        else if (pruned.length && prunedArea >= required) status = 'pruned_full';
+        else if (credited.length && counted >= required) status = 'pruned_full';
         else if (pruned.length || likely.length) status = 'pruned_partial';
         else if (own.every((g) => g.verdict.class === 'no_data')) status = 'no_data';
         else if (own.some((g) => g.verdict.class === 'unclear')) status = 'unclear';
         else status = 'none';
         const detected = pruned.map((g) => g.detectedAt).filter((d): d is string => !!d).sort();
 
-        // Anomalies: what an expert must look at. Everything else is decided automatically.
+        // Anomalies: blocking ones go to an expert; the rest are notes next to the automatic decision.
         const anomalies = new Set<FusionAnomaly>();
         for (const g of [...pruned, ...likely]) {
             const reg = byCode.get(g.id);
             const opt = g.verdict.groups.find((x) => x.group === 'optical');
             const rad = g.verdict.groups.find((x) => x.group === 'backscatter');
             if (opt?.z !== null && opt?.z !== undefined && rad?.z !== null && rad?.z !== undefined && ((opt.z >= 2.8 && rad.z <= -1.5) || (rad.z >= 2.8 && opt.z <= -1.5))) anomalies.add('sensors_contradict');
-            if ((reusedShare.get(g.id) ?? 0) >= DECISION_POLICY.repeatShare) anomalies.add('repeat_pruning');
+            if ((g.repeat?.reusedShare ?? 0) >= DECISION_POLICY.repeatShare) anomalies.add('repeat_pruning');
             if (reg?.approvalStatus === 'boundary_conflict') anomalies.add('boundary_conflict');
             if (reg?.approvalStatus === 'unresolved') anomalies.add('boundary_unresolved');
             if (reg?.discrepancies.some((d) => d === 'no_tea' || d === 'area_over')) anomalies.add('license_mismatch');
             if (licensed <= 0 || reg?.discrepancies.includes('no_license') || reg?.discrepancies.includes('lineage_unresolved')) anomalies.add('unlicensed_pruning');
         }
+        // Only CONFIRMED area can raise the over-pruning flag: a whole-garden "likely" unit overstates the cut.
         if (required > 0 && prunedArea >= DECISION_POLICY.overPrunedRatio * required) anomalies.add('over_pruned');
 
         const blocking = [...anomalies].filter((a) => DECISION_POLICY.blocking.includes(a));
@@ -353,15 +410,19 @@ async function main(): Promise<void> {
         } else if (blocking.length > 0) {
             decision = 'expert_anomaly';
             decisionReason = `Anomali: ${blocking.join(', ')}`;
-        } else if (prunedArea >= required || prunedArea + strongArea >= required) {
+        } else if (credited.length && counted >= required) {
             decision = 'auto_open';
-            decisionReason = prunedArea >= required ? 'Optik + radar teyitli budama 1/7 hedefini karşılıyor' : 'Teyitli + güçlü kalıcı tek-sensör budama 1/7 hedefini karşılıyor';
+            decisionReason = reused > 0
+                ? `Yeni alan ${Math.round(counted)} m² (tekrar budanan ${Math.round(reused)} m² sayılmadı) 1/7 hedefini karşılıyor`
+                : `${pruned.length ? 'Teyitli' : 'Olası'} budama ${Math.round(counted)} m² 1/7 hedefini (${Math.round(required)} m²) karşılıyor`;
         } else if (status === 'no_data') {
             decision = 'no_data';
             decisionReason = 'Bahçelerde yeterli gözlem yok';
         } else if (pruned.length || likely.length || own.some((g) => g.verdict.class === 'unclear')) {
             decision = 'auto_pending';
-            decisionReason = 'Budama izi var, hedef henüz dolmadı; taramalar sürüyor';
+            decisionReason = reused > 0
+                ? `Tekrar budanan ${Math.round(reused)} m² sayılmadı; ${Math.round(shortfall)} m² daha budanmalı`
+                : `Budama izi var, hedef henüz dolmadı; ${Math.round(shortfall)} m² daha budanmalı`;
         } else {
             decision = 'auto_none';
             decisionReason = 'Bütün bahçeler iyi gözlendi, budama görülmedi';
@@ -372,6 +433,9 @@ async function main(): Promise<void> {
             requiredM2: Math.round(required),
             prunedAreaM2: Math.round(prunedArea),
             likelyAreaM2: Math.round(likelyArea),
+            countedM2: Math.round(counted),
+            reusedM2: Math.round(reused),
+            shortfallM2: Math.round(shortfall),
             gardens: own.length,
             prunedGardens: pruned.map((g) => g.id),
             likelyGardens: likely.map((g) => g.id),

@@ -257,12 +257,14 @@ export function buildLicensingRegistry(input: RegistryInputs, seed = 2027): Lice
         const planimetric = round(polyArea(current));
         const secant = input.slopeSecantByGarden.get(g.id) ?? 1;
         const versions: GeometryVersion[] = [];
+        // The real register is mostly clean: nearly every garden has an approved boundary; the
+        // odd shared-parcel proposal or field check is the exception that exercises the workflow.
         let approvalStatus: GardenApprovalStatus;
         if (!g.boundaryResolved) {
             approvalStatus = random() < 0.6 ? 'proposed' : 'unresolved';
         } else {
             const roll = random();
-            approvalStatus = roll < 0.8 ? 'approved' : roll < 0.9 ? 'field_check_required' : 'proposed';
+            approvalStatus = roll < 0.96 ? 'approved' : roll < 0.985 ? 'field_check_required' : 'proposed';
         }
         if (approvalStatus === 'approved' && random() < 0.12) {
             const older = shrunk(current, 3);
@@ -376,8 +378,9 @@ export function buildLicensingRegistry(input: RegistryInputs, seed = 2027): Lice
         const split = own.length >= 3 && random() < 0.25;
         const groups: LicensedGarden[][] = split ? [own.slice(0, Math.ceil(own.length / 2)), own.slice(Math.ceil(own.length / 2))] : [own];
         for (const group of groups) {
+            // Faulty licences are rare in the field: ~94 % match, a few percent off, almost no ghosts.
             const roll = random();
-            const scenario = roll < 0.6 ? 'matching' : roll < 0.72 ? 'inflated' : roll < 0.82 ? 'understated' : roll < 0.9 ? 'ghost' : 'unlicensed';
+            const scenario = roll < 0.94 ? 'matching' : roll < 0.96 ? 'inflated' : roll < 0.98 ? 'understated' : roll < 0.99 ? 'ghost' : 'unlicensed';
             if (scenario === 'unlicensed') {
                 // Tea on the ground, no licence anywhere: a new-licence application may or may not exist.
                 for (const g of group) g.discrepancies.push('no_license');
@@ -405,10 +408,10 @@ export function buildLicensingRegistry(input: RegistryInputs, seed = 2027): Lice
             const serial = licenses.length + 1;
             const code = `DEMO-R-${String(9000 + serial)}`;
             const issuedYear = 1972 + Math.floor(random() * 50);
-            const holderDeceased = issuedYear < 1992 && random() < 0.3;
-            // Match level of the parcel reference(s) written on the licence.
+            const holderDeceased = issuedYear < 1992 && random() < 0.08;
+            // Match level of the parcel reference(s) written on the licence: almost all resolve.
             const mroll = random();
-            const matchLevel: MatchLevel = mroll < 0.7 ? 'exact' : mroll < 0.85 ? 'historical' : mroll < 0.93 ? 'probable' : 'unmatched';
+            const matchLevel: MatchLevel = mroll < 0.9 ? 'exact' : mroll < 0.97 ? 'historical' : mroll < 0.99 ? 'probable' : 'unmatched';
             const refs: string[] = [];
             const matched: string[] = [];
             const lineageCodes: string[] = [];

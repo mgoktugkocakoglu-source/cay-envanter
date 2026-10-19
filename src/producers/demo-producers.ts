@@ -30,6 +30,9 @@ export interface DemoGarden {
     geometryAreaM2: number;
 }
 
+/** Share of shared-parcel slices left unsurveyed in the demo (the register is mostly clean). */
+export const UNRESOLVED_SHARE = 0.05;
+
 export interface DemoProducer {
     id: string;
     name: string;
@@ -117,7 +120,7 @@ export function buildDemoProducers(parcels: TeaParcelInput[], seed = 2026): { pr
         const parcelArea = area(feature(parcel.geometry));
         const maxHolders = Math.max(1, Math.min(4, Math.floor(parcelArea / MIN_SLICE_M2)));
         const holders = Math.min(weighted(random, HOLDER_WEIGHTS), maxHolders);
-        const boundaryResolved = holders === 1 || random() >= 0.2;
+        const boundaryResolved = holders === 1 || random() >= UNRESOLVED_SHARE;
         splitEqualStrips(parcel.geometry, holders).forEach((geometry, i) => {
             gardens.push({
                 id: `DEMO-B-${String(gardens.length + 1).padStart(4, '0')}`,
