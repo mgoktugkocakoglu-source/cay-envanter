@@ -1,7 +1,8 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
-import type { FeatureCollection, MultiPolygon, Polygon } from 'geojson';
+import type { Feature, FeatureCollection, MultiPolygon, Polygon } from 'geojson';
+import { area as turfArea, difference, feature, featureCollection, union } from '@turf/turf';
 import { initEarthEngine } from '../ee/session.ts';
 import { pruningWindows } from '../ee/pruning.ts';
 import { NeighborhoodStore } from '../library/store.ts';
@@ -57,6 +58,14 @@ export interface FusionGarden {
 
 export type ProducerFusionStatus = 'pruned_full' | 'pruned_partial' | 'none' | 'unclear' | 'no_license' | 'no_data';
 
+/**
+ * Purchase decision policy: the satellite decides on its own wherever the evidence is clean;
+ * an expert only sees anomalies (contradicting sensors, repeat pruning, boundary conflicts,
+ * licence problems, suspicious over-pruning).
+ */
+export type FusionDecision = 'auto_open' | 'auto_pending' | 'auto_short' | 'auto_none' | 'expert_anomaly' | 'no_license' | 'no_data';
+export type FusionAnomaly = 'sensors_contradict' | 'repeat_pruning' | 'boundary_conflict' | 'boundary_unresolved' | 'license_mismatch' | 'over_pruned' | 'unlicensed_pruning';
+
 export interface FusionProducer {
     id: string;
     licensedAreaM2: number;
@@ -68,6 +77,19 @@ export interface FusionProducer {
     likelyGardens: string[];
     status: ProducerFusionStatus;
     firstDetectedAt: string | null;
+    decision: FusionDecision;
+    anomalies: FusionAnomaly[];
+    decisionReason: string;
+}
+
+/** Tea the satellite sees outside every harvested parcel: judged too, matched to an owner later. */
+export interface FusionUnassigned {
+    id: string;
+    areaM2: number;
+    geometry: Poly;
+    verdict: FusionVerdict;
+    detectedAt: string | null;
+    likelyAt: string | null;
 }
 
 export interface FusionSeasonFile {
@@ -80,7 +102,24 @@ export interface FusionSeasonFile {
     sensors: { optical: { dates: string[] }; backscatter: Array<{ pass: OrbitPass; relativeOrbit: number; dates: string[] }>; coherence: Array<{ pass: OrbitPass; dates: string[] }> };
     gardens: FusionGarden[];
     producers: FusionProducer[];
+    unassigned: FusionUnassigned[];
+    /** Share of the neighbourhood covered by harvested TKGM parcels (the rest is "unassigned"). */
+    parcelCoverage: number;
+    policy: typeof DECISION_POLICY;
 }
+
+export const DECISION_POLICY = {
+    /** Likely gardens may count toward the 1/7 for an automatic opening when this strong and persisting. */
+    likelyMinZ: 4.0,
+    /** Pruned area above this multiple of the 1/7 target is suspicious (clearing, not pruning). */
+    overPrunedRatio: 3.0,
+    /** Reused share of an optical event (same ground credited within the 7-season cycle) that is an anomaly. */
+    repeatShare: 0.5,
+    /** Anomalies that send the file to an expert; the others are notes shown next to the automatic decision. */
+    blocking: ['sensors_contradict', 'repeat_pruning', 'boundary_conflict', 'unlicensed_pruning', 'over_pruned'] as FusionAnomaly[],
+    /** Smallest free tea patch judged on its own (m²). */
+    minUnassignedM2: 300,
+} as const;
 
 async function main(): Promise<void> {
     const { values } = parseArgs({
@@ -119,15 +158,36 @@ async function main(): Promise<void> {
     // judged as its own unit and the garden takes the stronger of the two verdicts.
     const scanPath = join(store.dir, 'producers', `season-${windows.season}.json`);
     const patches = new Map<string, { geometry: Poly; areaM2: number }>();
+    const reusedShare = new Map<string, number>();
     if (existsSync(scanPath)) {
-        const scan = JSON.parse(readFileSync(scanPath, 'utf8')) as { events: Array<{ gardenId: string; areaM2: number; geometry: Poly }> };
-        for (const e of scan.events) if (e.areaM2 >= 100) patches.set(e.gardenId, { geometry: e.geometry, areaM2: e.areaM2 });
+        const scan = JSON.parse(readFileSync(scanPath, 'utf8')) as { events: Array<{ gardenId: string; areaM2: number; reusedM2: number; geometry: Poly }> };
+        for (const e of scan.events) {
+            if (e.areaM2 >= 100) patches.set(e.gardenId, { geometry: e.geometry, areaM2: e.areaM2 });
+            if (e.areaM2 > 0) reusedShare.set(e.gardenId, e.reusedM2 / e.areaM2);
+        }
     }
+    // Tea outside every harvested parcel (the TKGM harvest is quota-bound and still growing):
+    // judged as free units so pruning is seen everywhere, owner matched once the parcel arrives.
+    const gardenFeatures = gardens.map((g) => feature(g.geometry));
+    const gardensUnion = gardenFeatures.length === 0 ? null : gardenFeatures.length === 1 ? gardenFeatures[0]! : (union(featureCollection(gardenFeatures)) as Feature<Poly> | null);
+    const freePatches: Array<{ id: string; geometry: Poly; areaM2: number }> = [];
+    for (const tp of teaPatches.features) {
+        const rest = gardensUnion ? difference(featureCollection([feature(tp.geometry), gardensUnion])) : feature(tp.geometry);
+        if (!rest) continue;
+        const parts: Polygon[] = rest.geometry.type === 'Polygon' ? [rest.geometry] : rest.geometry.coordinates.map((c) => ({ type: 'Polygon', coordinates: c }));
+        for (const part of parts) {
+            const m2 = turfArea(feature(part));
+            if (m2 >= DECISION_POLICY.minUnassignedM2) freePatches.push({ id: `free-${String(freePatches.length + 1).padStart(3, '0')}`, geometry: part, areaM2: Math.round(m2) });
+        }
+    }
+    const summaryFile = join(store.dir, 'summary.json');
+    const parcelCoverage = existsSync(summaryFile) ? ((JSON.parse(readFileSync(summaryFile, 'utf8')) as { coveredRatio?: number }).coveredRatio ?? 0) : 0;
     const units = [
         ...gardens.map((g) => ({ id: g.id, geometry: g.geometry })),
         ...[...patches.entries()].map(([id, p]) => ({ id: `${id}#patch`, geometry: p.geometry })),
+        ...freePatches.map((p) => ({ id: p.id, geometry: p.geometry })),
     ];
-    console.log(`Sezon ${windows.season}: ${gardens.length} bahçe (+${patches.size} optik değişim yaması), ${producers.length} müstahsil, tarama her ${every} gün`);
+    console.log(`Sezon ${windows.season}: ${gardens.length} bahçe (+${patches.size} optik değişim yaması, +${freePatches.length} parselsiz çaylık ${Math.round(freePatches.reduce((s, p) => s + p.areaM2, 0) / 1000)} da), ${producers.length} müstahsil, tarama her ${every} gün; parsel kapsaması %${Math.round(parcelCoverage * 100)}`);
 
     const window: [string, string] = [`${year}-09-01`, `${year + 1}-05-15`];
     const outDir = join(store.dir, 'pruning-fusion');
@@ -237,8 +297,19 @@ async function main(): Promise<void> {
     const counts = outGardens.reduce<Record<string, number>>((h, g) => ((h[g.verdict.class] = (h[g.verdict.class] ?? 0) + 1), h), {});
     console.log(`Bahçe kararları: ${JSON.stringify(counts)}`);
 
-    // Producer: pruned area against the 1/7 of the licensed area.
+    // Free tea patches outside the harvested parcels.
+    const outUnassigned: FusionUnassigned[] = freePatches.map((p) => {
+        const series = seriesOf(p.id);
+        const verdict = judge(series, scanTo);
+        const timeline = scanTimeline(series, scanFrom, scanTo, every);
+        return { id: p.id, areaM2: p.areaM2, geometry: p.geometry, verdict, detectedAt: verdict.class === 'pruned' ? timeline.detectedAt : null, likelyAt: verdict.class === 'pruned' || verdict.class === 'likely' ? timeline.likelyAt : null };
+    });
+    const uCounts = outUnassigned.reduce<Record<string, number>>((h, u) => ((h[u.verdict.class] = (h[u.verdict.class] ?? 0) + 1), h), {});
+    console.log(`Parselsiz çaylık kararları: ${JSON.stringify(uCounts)}`);
+
+    // Producer: pruned area against the 1/7 of the licensed area, then the purchase decision.
     const gardenById = new Map(outGardens.map((g) => [g.id, g]));
+    const strongLikely = (g: FusionGarden) => g.verdict.class === 'likely' && (g.verdict.z ?? 0) >= DECISION_POLICY.likelyMinZ && g.verdict.groups.flatMap((x) => x.channels).some((c) => (c.persistence ?? 0) >= 0.5);
     const outProducers: FusionProducer[] = producers.map((p) => {
         const own = p.gardenIds.map((id) => gardenById.get(id)).filter((g): g is FusionGarden => !!g);
         const licensed = own.reduce((s, g) => s + (g.licensedAreaM2 ?? 0), 0);
@@ -248,6 +319,7 @@ async function main(): Promise<void> {
         // The pruned area is the unit that carried the verdict (the patch when only part was cut).
         const prunedArea = pruned.reduce((s, g) => s + g.unitAreaM2, 0);
         const likelyArea = likely.reduce((s, g) => s + g.unitAreaM2, 0);
+        const strongArea = likely.filter(strongLikely).reduce((s, g) => s + g.unitAreaM2, 0);
         let status: ProducerFusionStatus;
         if (licensed <= 0) status = 'no_license';
         else if (pruned.length && prunedArea >= required) status = 'pruned_full';
@@ -256,6 +328,44 @@ async function main(): Promise<void> {
         else if (own.some((g) => g.verdict.class === 'unclear')) status = 'unclear';
         else status = 'none';
         const detected = pruned.map((g) => g.detectedAt).filter((d): d is string => !!d).sort();
+
+        // Anomalies: what an expert must look at. Everything else is decided automatically.
+        const anomalies = new Set<FusionAnomaly>();
+        for (const g of [...pruned, ...likely]) {
+            const reg = byCode.get(g.id);
+            const opt = g.verdict.groups.find((x) => x.group === 'optical');
+            const rad = g.verdict.groups.find((x) => x.group === 'backscatter');
+            if (opt?.z !== null && opt?.z !== undefined && rad?.z !== null && rad?.z !== undefined && ((opt.z >= 2.8 && rad.z <= -1.5) || (rad.z >= 2.8 && opt.z <= -1.5))) anomalies.add('sensors_contradict');
+            if ((reusedShare.get(g.id) ?? 0) >= DECISION_POLICY.repeatShare) anomalies.add('repeat_pruning');
+            if (reg?.approvalStatus === 'boundary_conflict') anomalies.add('boundary_conflict');
+            if (reg?.approvalStatus === 'unresolved') anomalies.add('boundary_unresolved');
+            if (reg?.discrepancies.some((d) => d === 'no_tea' || d === 'area_over')) anomalies.add('license_mismatch');
+            if (licensed <= 0 || reg?.discrepancies.includes('no_license') || reg?.discrepancies.includes('lineage_unresolved')) anomalies.add('unlicensed_pruning');
+        }
+        if (required > 0 && prunedArea >= DECISION_POLICY.overPrunedRatio * required) anomalies.add('over_pruned');
+
+        const blocking = [...anomalies].filter((a) => DECISION_POLICY.blocking.includes(a));
+        let decision: FusionDecision;
+        let decisionReason: string;
+        if (licensed <= 0) {
+            decision = pruned.length || likely.length ? 'expert_anomaly' : 'no_license';
+            decisionReason = pruned.length || likely.length ? 'Ruhsatsız/eşleşmemiş alanda budama görüldü' : 'Ruhsatlı alan yok; 1/7 hesaplanamaz';
+        } else if (blocking.length > 0) {
+            decision = 'expert_anomaly';
+            decisionReason = `Anomali: ${blocking.join(', ')}`;
+        } else if (prunedArea >= required || prunedArea + strongArea >= required) {
+            decision = 'auto_open';
+            decisionReason = prunedArea >= required ? 'Optik + radar teyitli budama 1/7 hedefini karşılıyor' : 'Teyitli + güçlü kalıcı tek-sensör budama 1/7 hedefini karşılıyor';
+        } else if (status === 'no_data') {
+            decision = 'no_data';
+            decisionReason = 'Bahçelerde yeterli gözlem yok';
+        } else if (pruned.length || likely.length || own.some((g) => g.verdict.class === 'unclear')) {
+            decision = 'auto_pending';
+            decisionReason = 'Budama izi var, hedef henüz dolmadı; taramalar sürüyor';
+        } else {
+            decision = 'auto_none';
+            decisionReason = 'Bütün bahçeler iyi gözlendi, budama görülmedi';
+        }
         return {
             id: p.id,
             licensedAreaM2: Math.round(licensed),
@@ -267,10 +377,15 @@ async function main(): Promise<void> {
             likelyGardens: likely.map((g) => g.id),
             status,
             firstDetectedAt: detected[0] ?? null,
+            decision,
+            anomalies: [...anomalies],
+            decisionReason,
         };
     });
     const pCounts = outProducers.reduce<Record<string, number>>((h, p) => ((h[p.status] = (h[p.status] ?? 0) + 1), h), {});
+    const dCounts = outProducers.reduce<Record<string, number>>((h, p) => ((h[p.decision] = (h[p.decision] ?? 0) + 1), h), {});
     console.log(`Müstahsil durumları: ${JSON.stringify(pCounts)}`);
+    console.log(`Alım kararları: ${JSON.stringify(dCounts)}`);
 
     const out: FusionSeasonFile = {
         season: windows.season,
@@ -286,6 +401,9 @@ async function main(): Promise<void> {
         },
         gardens: outGardens,
         producers: outProducers,
+        unassigned: outUnassigned,
+        parcelCoverage,
+        policy: DECISION_POLICY,
     };
     const outPath = join(outDir, `season-${windows.season}.json`);
     writeFileSync(outPath, JSON.stringify(out));

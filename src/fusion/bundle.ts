@@ -17,12 +17,16 @@ export function loadFusionForBundle(neighborhoodDir: string) {
         method: 'multi-sensor-step-change',
         rules: seasons[0]!.rules,
         channels: seasons[0]!.channels,
+        policy: seasons[0]!.policy,
         seasons: seasons.map((s) => ({
             season: s.season,
             everyDays: s.everyDays,
             scanFrom: s.scanFrom,
             scanTo: s.scanTo,
             sensors: s.sensors,
+            parcelCoverage: s.parcelCoverage,
+            // Series of free patches are not shipped (no owner to show them to yet); verdicts are.
+            unassigned: s.unassigned.map((u) => ({ id: u.id, areaM2: u.areaM2, geometry: u.geometry, verdict: { ...u.verdict, groups: undefined }, detectedAt: u.detectedAt, likelyAt: u.likelyAt })),
             gardens: s.gardens.map((g) => ({
                 code: g.id,
                 producerCode: g.producerId,
