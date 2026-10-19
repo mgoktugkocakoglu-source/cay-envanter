@@ -174,6 +174,18 @@ node scripts/fusion-synthetic.ts     # sentetik doğrulama: derin / hafif / geç
 173 belirsiz, 98 budama yok; müstahsil: 3 tam, 42 kısmen, 47 belirsiz, 8 görülmedi, 36 ruhsatsız.
 Sonraki kaldıraçlar: saha etiketleriyle eşik kalibrasyonu, 50 cm optik, S1'de 3×3 çoklu bakış.
 
+**Parselsiz çaylıklar:** TKGM hasadı günlük kotayla büyüdüğü için (Çataldere %56) parsel dışında kalan
+çay yamaları (≥ 300 m²) `unassigned` birimler olarak aynı modelle yargılanır; parsel/ruhsat gelince
+sahibine bağlanır. Hasat büyüdükçe zincir (detect-tea → scan-producers → build-licensing → fuse-pruning)
+yeniden koşturulmalıdır; demo müstahsil kaydı deterministik olduğundan kimlikler değişebilir.
+
+**Alım kararı politikası** (`DECISION_POLICY`): kanıt temizse uydu kendi karar verir — `auto_open`
+(teyitli, ya da z ≥ 4 ve kalıcı tek-sensör budama 1/7'yi karşılıyor), `auto_pending` (iz var, hedef dolmadı),
+`auto_none` (iyi gözlendi, budama yok; alım yine de uydu tarafından kapatılmaz). Eksper yalnız **engelleyici
+anomalileri** görür: sensörler çelişiyor, 7 yıllık döngü içinde tekrar budama (çakışma ≥ %50), sınır ihtilafı,
+ruhsatsız/eşleşmemiş alanda budama, aşırı budama (hedefin 3 katı). Ruhsat–alan uyuşmazlığı ve belirsiz hisse
+sınırı yalnızca not olarak düşer.
+
 ## Dijital ruhsat kaydı (DEMO, müstahsil bazlı)
 
 ```bash
