@@ -233,6 +233,15 @@ BİLFERA tasarımındaki bütün kayıt sorunlarını kasıtlı olarak içeren d
 - **Ruhsatsız çay** — paket, uydu çay yamalarından ruhsat tahsisli alt-poligonları çıkararak (mekânsal fark)
   `licensing.unlicensedTea` katmanını üretir.
 
+**Site üzerinde sicil işlemleri (2026-10):** demo kayıt siteye yüklendikten sonra sicil sitenin veritabanında
+yaşar. Ruhsatlandırma sekmesinden açılan dosyalar — *bahçe alt bölünmesi* (haritada çizgiyle/poligonla parçalara
+ayırma, parça başına sahip ve ruhsat payı), *ruhsat ayırımı* (bahçeler üzerinden mirasçılara/alıcıya yeni ruhsat
+numaraları), *devir/intikal*, *alan düzeltme*, *sınır tespiti* (RTK/harita, sürümlenir, komşu çakışması ihtilaf açar) —
+onaylandığında ruhsat, bahçe ve müstahsil kayıtlarını değiştirir; eski bahçe "bölündü" olarak kalır, yeni kayıtlar
+`source = 'site'` ile işaretlenir ve motor paketi yeniden yüklense bile korunur (`tea-inventory-seed.service.ts`,
+snapshot → restore). Motor, siteden ayrılan yeni bahçeleri bir sonraki zincir koşusunda henüz değerlendirmez; bu
+köprü (site sicili → `licensing/registry.json`) sıradaki adımdır.
+
 Kayıt varsa `scan-producers` ve `export-site` müstahsilin ruhsat alanını bu kayıttan alır (ruhsatsız
 müstahsil → `no_license`, alım kapalı); sezon sonuçları uyduya dokunmadan `src/producers/evaluate.ts`
 ile yeniden hesaplanır.
