@@ -17,7 +17,8 @@
         "scan-producers": "node src/cli/scan-producers.ts",
         "build-licensing": "node src/cli/build-licensing.ts",
         "detect-pruning-radar": "node src/cli/detect-pruning-radar.ts",
-        "fuse-pruning": "node src/cli/fuse-pruning.ts"
+        "fuse-pruning": "node src/cli/fuse-pruning.ts",
+        "calibrate-fusion": "node src/cli/calibrate-fusion.ts"
     },
     "dependencies": {
         "@google/earthengine": "^1.7.47",

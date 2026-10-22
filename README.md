@@ -186,6 +186,20 @@ anomalileri** görür: sensörler çelişiyor, 7 yıllık döngü içinde tekrar
 ruhsatsız/eşleşmemiş alanda budama, aşırı budama (hedefin 3 katı). Ruhsat–alan uyuşmazlığı ve belirsiz hisse
 sınırı yalnızca not olarak düşer.
 
+### Saha kalibrasyonu (etiket → eşik)
+
+```bash
+# Sitedeki "Kalibrasyon (saha)" sekmesinden etiketleri CSV olarak indirin (areas/:id/calibration/labels.csv)
+npm run calibrate-fusion -- --province Trabzon --district Of --neighborhood Çataldere --season 2025 --labels etiketler.csv [--apply]
+```
+
+Saha ekibi bahçe başına *budandı / kısmen / budanmadı* etiketini konumlu fotoğrafla girer (protokol:
+`docs/calibration-protocol.md`). `calibrate-fusion` etiketleri `pruning-fusion/season-<s>.json` kararlarıyla
+karşılaştırır: karışıklık matrisi, yakalama, yanlış alarm, z eşiği taraması ve F1'i en yüksek eşik önerisi
+(en az 15 pozitif + 15 negatif). `--apply` ile `pruning-fusion/calibration.json` "uygulanacak" yazılır; bir
+sonraki `fuse-pruning` koşusu `zPruned` / `zLikely` değerlerini oradan alır, çıktıya `calibration` bloğunu ekler
+ve `export-site` bundle'ı `fusion.calibrated = true` ile üretir (sitedeki "kalibre edilmedi" etiketi düşer).
+
 ## Dijital ruhsat kaydı (DEMO, müstahsil bazlı)
 
 ```bash

@@ -122,6 +122,8 @@ export interface FusionSeasonFile {
     /** Share of the neighbourhood covered by harvested TKGM parcels (the rest is "unassigned"). */
     parcelCoverage: number;
     policy: typeof DECISION_POLICY;
+    /** Present when calibrate-fusion ran with --apply: the field-label scores behind the thresholds in `rules`. */
+    calibration?: { labels: number; positives: number; negatives: number; recall: number | null; falseAlarmRate: number | null; zPruned: number; zLikely: number; computedAt: string } | null;
 }
 
 export const DECISION_POLICY = {
@@ -213,6 +215,17 @@ async function main(): Promise<void> {
 
     const window: [string, string] = [`${year}-09-01`, `${year + 1}-05-15`];
     const outDir = join(store.dir, 'pruning-fusion');
+    // Field calibration (calibrate-fusion --apply): the labelled thresholds replace the synthetic ones.
+    const calibrationPath = join(outDir, 'calibration.json');
+    let calibration: FusionSeasonFile['calibration'] = null;
+    if (existsSync(calibrationPath)) {
+        const cal = JSON.parse(readFileSync(calibrationPath, 'utf8')) as { applied?: boolean; season: string; labels: number; positives: number; negatives: number; recall: number | null; falseAlarmRate: number | null; suggested: { zPruned: number; zLikely: number } | null; computedAt: string };
+        if (cal.applied && cal.suggested && cal.season === windows.season) {
+            Object.assign(FUSION_RULES, { zPruned: cal.suggested.zPruned, zLikely: cal.suggested.zLikely });
+            calibration = { labels: cal.labels, positives: cal.positives, negatives: cal.negatives, recall: cal.recall, falseAlarmRate: cal.falseAlarmRate, zPruned: cal.suggested.zPruned, zLikely: cal.suggested.zLikely, computedAt: cal.computedAt };
+            console.log(`Kalibrasyon uygulandı: budandı z ≥ ${cal.suggested.zPruned}, olası z ≥ ${cal.suggested.zLikely} (${cal.labels} saha etiketi)`);
+        }
+    }
     mkdirSync(outDir, { recursive: true });
 
     // Raw sensor series are cached: the model is re-run often, the satellite fetch is not.
@@ -468,6 +481,7 @@ async function main(): Promise<void> {
         unassigned: outUnassigned,
         parcelCoverage,
         policy: DECISION_POLICY,
+        calibration,
     };
     const outPath = join(outDir, `season-${windows.season}.json`);
     writeFileSync(outPath, JSON.stringify(out));

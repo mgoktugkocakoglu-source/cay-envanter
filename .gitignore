@@ -5,3 +5,6 @@ data/
 secrets/
 *.key.json
 .venv/
+
+# local demo video renders
+docs/demo/

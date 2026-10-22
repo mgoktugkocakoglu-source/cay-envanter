@@ -13,7 +13,8 @@ export function loadFusionForBundle(neighborhoodDir: string) {
     if (files.length === 0) return null;
     const seasons = files.map((n) => JSON.parse(readFileSync(join(dir, n), 'utf8')) as FusionSeasonFile);
     return {
-        calibrated: false,
+        calibrated: seasons.some((s) => !!s.calibration),
+        calibration: seasons.at(-1)!.calibration ?? null,
         method: 'multi-sensor-step-change',
         rules: seasons[0]!.rules,
         channels: seasons[0]!.channels,
