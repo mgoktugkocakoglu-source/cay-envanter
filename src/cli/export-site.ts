@@ -11,6 +11,7 @@ import { loadPruningForBundle, loadSeasonImagery } from '../pruning/bundle.ts';
 import { loadProducersForBundle } from '../producers/bundle.ts';
 import { loadRadarForBundle } from '../radar/bundle.ts';
 import { loadFusionForBundle } from '../fusion/bundle.ts';
+import { loadHealthForBundle } from '../health/bundle.ts';
 
 /**
  * Packs one neighborhood's inventory into a single JSON bundle for the cayhesabim site
@@ -180,6 +181,8 @@ function main(): void {
         radar: loadRadarForBundle(store.dir),
         // Optional: multi-sensor step-change verdicts per garden / producer (fusion module).
         fusion: loadFusionForBundle(store.dir),
+        // Optional: growing-season health, anomaly and yield estimates (garden-health module).
+        health: loadHealthForBundle(store.dir),
         licensing: {
             demo: true,
             generatedAt: registry.generatedAt,
@@ -204,6 +207,7 @@ function main(): void {
     console.log(`Ruhsat kaydı: ${registry.licenses.length} ruhsat, ${registry.gardens.length} bahçe, ${registry.applications.length} başvuru; ruhsatsız çay ${Math.round(unlicensed.reduce((s, u) => s + u.areaM2, 0) / 1000)} da (${unlicensed.length} alan)`);
     console.log(`Radar teyidi: ${bundle.radar ? bundle.radar.seasons.map((s) => `${s.season} (${s.records.length} kayıt)`).join(', ') : 'yok'}`);
     console.log(`Çok-sensör karar: ${bundle.fusion ? bundle.fusion.seasons.map((s) => `${s.season} (${s.gardens.length} bahçe)`).join(', ') : 'yok'}`);
+    console.log(`Bahçe sağlığı: ${bundle.health ? bundle.health.seasons.map((s) => `${s.season} (${s.gardens.length} bahçe)`).join(', ') : 'yok'}`);
     console.log(`Paket: ${outPath}`);
 
     const imagery = loadSeasonImagery(store.dir);

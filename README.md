@@ -200,6 +200,29 @@ karşılaştırır: karışıklık matrisi, yakalama, yanlış alarm, z eşiği 
 sonraki `fuse-pruning` koşusu `zPruned` / `zLikely` değerlerini oradan alır, çıktıya `calibration` bloğunu ekler
 ve `export-site` bundle'ı `fusion.calibrated = true` ile üretir (sitedeki "kalibre edilmedi" etiketi düşer).
 
+## Bahçe sağlığı ve verim (P3, ayrı modül)
+
+```bash
+# Büyüme sezonu (15 Nis – 31 Eki) NDVI/NDRE/NBR + S1 VH; önbellek health/series-<yyyy>.json
+npm run scan-health -- --province Trabzon --district Of --neighborhood Çataldere --year 2026 [--refetch]
+```
+
+`health/season-<yyyy>.json` (`src/health/model.ts`), budama modülüne dokunmadan:
+- **Canlılık**: bahçenin Haz–Eyl ortalama NDVI'si / mahalle ortancası (0,6–1,3 arasına kırpılır).
+- **Anomali** (komşuluğa göreli seriler, aday tarih 1 May–10 Eki, basamak z-skoru): *kimyasal şüphesi* =
+  NDVI/NDRE ≥ 0,10 düşer, z ≥ 3,5, radar VH basamağı < 0,8 dB (yapı korunmuş: herbisit yanığı / kimyasal hasar,
+  yaprak numunesi işareti); *yaprak kaybı* = optik + radar ≥ 0,8 dB (zararlı, dolu, izinsiz kesim); *stres* =
+  hafif kayıp (z ≥ 2,5). 45–95 gün sonraki toparlanma payı da yazılır.
+- **Rekolte tahmini**: çay alanı (da) × 1000 kg/da (demo norm) × canlılık × önceki kışın budama payı
+  (budanan kısım 0,35) × anomali faktörü; müstahsilde kota = ruhsat alanı × 1000 kg/da; bayrak `low` (< %50),
+  `high` (> %140), `no_license`.
+- Sitede "Bahçe Sağlığı" sekmesi: anomaliler, rekolte/kota, harita, **gübreleme geri beslemesi** (kayıt
+  girilen tarihten 10–35 gün sonra komşulara göre NDRE/NDVI tepkisi).
+
+Çataldere 2026 (kalibre edilmedi): 344 bahçede 7 kimyasal şüphesi, 7 yaprak kaybı, 77 stres; 25 müstahsilde
+tahmin kotanın altında, toplam tahmin ~155 t. Aynı tarihte kümelenen anomaliler (ör. 5–10 Tem) görüntü
+artefaktı olabilir; saha teyidi gerekir.
+
 ## Dijital ruhsat kaydı (DEMO, müstahsil bazlı)
 
 ```bash

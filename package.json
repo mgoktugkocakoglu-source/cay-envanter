@@ -18,7 +18,8 @@
         "build-licensing": "node src/cli/build-licensing.ts",
         "detect-pruning-radar": "node src/cli/detect-pruning-radar.ts",
         "fuse-pruning": "node src/cli/fuse-pruning.ts",
-        "calibrate-fusion": "node src/cli/calibrate-fusion.ts"
+        "calibrate-fusion": "node src/cli/calibrate-fusion.ts",
+        "scan-health": "node src/cli/scan-health.ts"
     },
     "dependencies": {
         "@google/earthengine": "^1.7.47",
