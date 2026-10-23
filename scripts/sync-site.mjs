@@ -25,9 +25,12 @@ for (const file of bundles) {
     const imagerySrc = join(siteData, 'imagery', code);
     let images = 0;
     if (existsSync(imagerySrc)) {
-        mkdirSync(imageryDir, { recursive: true });
-        cpSync(imagerySrc, join(imageryDir, code), { recursive: true });
         images = readdirSync(imagerySrc, { recursive: true }).filter((f) => /\.(jpe?g|png)$/i.test(String(f))).length;
+        // Unchanged bundles keep their images: rewriting watched files makes a running Vite dev server crash (EBUSY).
+        if (!same || !existsSync(join(imageryDir, code))) {
+            mkdirSync(imageryDir, { recursive: true });
+            cpSync(imagerySrc, join(imageryDir, code), { recursive: true });
+        }
     }
     console.log(`${same ? '=' : '+'} ${code.padEnd(28)} ${(statSync(src).size / 1e6).toFixed(1)} MB · ${bundle.area.neighborhood} · ${images} görüntü${same ? ' (paket değişmedi)' : ''}`);
 }

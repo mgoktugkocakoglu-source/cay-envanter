@@ -76,7 +76,20 @@ function buildSteps(store: NeighborhoodStore, base: string[], opts: { seasons: n
         },
     });
     steps.push({ stage: 'detect-tea', label: 'Uydudan çay tespiti', output: d('tea-report.json'), inputs: [parcels], run: () => runNode('detect-tea', base) });
-    steps.push({ stage: 'detect-pruning', label: 'Parsel bazlı sezon karşılaştırması', output: d('pruning', 'summary.json'), inputs: [teaPatches], run: () => runNode('detect-pruning', [...base, ...seasonArgs]) });
+    steps.push({
+        stage: 'detect-pruning',
+        label: 'Parsel bazlı sezon karşılaştırması',
+        output: d('pruning', 'summary.json'),
+        inputs: [teaPatches],
+        run: () => {
+            // The parcel-level comparison needs parcels; a boundary-only library (harvest not started) skips it.
+            if (!store.loadParcels().some((p) => p.properties.inTargetNeighborhood)) {
+                console.log('  kütüphanede parsel yok, atlandı');
+                return 0;
+            }
+            return runNode('detect-pruning', [...base, ...seasonArgs]);
+        },
+    });
     steps.push({
         stage: 'imagery',
         label: 'Sezon görüntüleri',
