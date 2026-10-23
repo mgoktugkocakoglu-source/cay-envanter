@@ -18,6 +18,8 @@ TKGM günlük kotası dolunca zincir eldeki parsellerle sürer. Her gün aynı k
 Adım adları: harvest, detect-tea, detect-pruning, imagery, scan-producers, build-licensing, radar, fuse, health, export-site
 `;
 
+const RETRY_DELAY_S = 60;
+
 type StageName = 'harvest' | 'detect-tea' | 'detect-pruning' | 'imagery' | 'scan-producers' | 'build-licensing' | 'radar' | 'fuse' | 'health' | 'export-site';
 const STAGE_ORDER: StageName[] = ['harvest', 'detect-tea', 'detect-pruning', 'imagery', 'scan-producers', 'build-licensing', 'radar', 'fuse', 'health', 'export-site'];
 
@@ -203,7 +205,13 @@ function main(): void {
             }
             console.log(`\n── ${step.label} (${new Date().toLocaleTimeString('tr-TR')})`);
             const t0 = Date.now();
-            const status = step.run();
+            let status = step.run();
+            if (status !== 0) {
+                // Earth Engine / network hiccups (ETIMEDOUT, 5xx) are common on long runs: one retry after a pause.
+                console.log(`   ↻ ${step.label} başarısız oldu; ${RETRY_DELAY_S} sn sonra bir kez daha deneniyor`);
+                Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, RETRY_DELAY_S * 1000);
+                status = step.run();
+            }
             const seconds = Math.round((Date.now() - t0) / 1000);
             if (status !== 0) {
                 console.error(`   ✗ ${step.label} başarısız (çıkış ${status}, ${seconds} sn); bu mahallede zincir durdu.`);
