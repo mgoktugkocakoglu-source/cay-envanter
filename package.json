@@ -19,7 +19,9 @@
         "detect-pruning-radar": "node src/cli/detect-pruning-radar.ts",
         "fuse-pruning": "node src/cli/fuse-pruning.ts",
         "calibrate-fusion": "node src/cli/calibrate-fusion.ts",
-        "scan-health": "node src/cli/scan-health.ts"
+        "scan-health": "node src/cli/scan-health.ts",
+        "pipeline": "node src/cli/pipeline.ts",
+        "neighborhoods": "node src/cli/list-neighborhoods.ts"
     },
     "dependencies": {
         "@google/earthengine": "^1.7.47",

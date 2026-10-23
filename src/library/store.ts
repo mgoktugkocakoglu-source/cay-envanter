@@ -89,6 +89,11 @@ export class NeighborhoodStore {
         appendFileSync(this.parcelsPath, JSON.stringify(parcel) + '\n');
     }
 
+    /** Rewrites the whole parcel file (used when a resumed harvest re-evaluates stored records). */
+    rewriteParcels(parcels: Parcel[]): void {
+        writeFileSync(this.parcelsPath, parcels.map((p) => JSON.stringify(p)).join('\n') + (parcels.length ? '\n' : ''));
+    }
+
     appendPointProbe(probe: Position, result: ProbeResult, key: string | null): void {
         this.appendProbe({ kind: 'point', lng: probe[0], lat: probe[1], result, key, at: new Date().toISOString() });
     }

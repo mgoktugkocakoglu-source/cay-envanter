@@ -1,11 +1,13 @@
-import { writeFileSync } from 'node:fs';
+import { existsSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
+import type { MultiPolygon, Polygon } from 'geojson';
 import { initEarthEngine, evaluate } from '../ee/session.ts';
 import { buildTeaFeatures } from '../ee/tea-features.ts';
 import { labelParcels } from '../ee/weak-labels.ts';
-import { NeighborhoodStore } from '../library/store.ts';
+import { LIBRARY_ROOT, NeighborhoodStore, slugify } from '../library/store.ts';
 import { isTeaTitle } from '../tkgm/titles.ts';
+import type { Parcel } from '../tkgm/types.ts';
 
 /* `ee` objects are untyped (see src/types/earthengine.d.ts). */
 type EE = any; // eslint-disable-line @typescript-eslint/no-explicit-any
@@ -20,8 +22,36 @@ const MIN_PATCH_M2 = 300;
 
 const USAGE = `
 Kullanım:
-  npm run detect-tea -- --province Trabzon --district Of --neighborhood Çataldere [--start 2024-01-01 --end 2026-01-01]
+  npm run detect-tea -- --province Trabzon --district Of --neighborhood Çataldere [--start 2024-01-01 --end 2026-01-01] [--own-training]
+
+Eğitim örnekleri varsayılan olarak ilçe kütüphanesindeki BÜTÜN mahallelerin parsellerinden havuzlanır:
+parsel kütüphanesi henüz küçük olan yeni bir mahalle de komşularının tapu nitelikleriyle eğitilmiş sınıflandırıcıyla
+taranır. --own-training yalnız hedef mahallenin parsellerini kullanır (pilot davranışı).
 `;
+
+interface TrainingPool {
+    parcels: Parcel[];
+    boundaries: Array<Polygon | MultiPolygon>;
+    neighborhoods: string[];
+}
+
+/** Harvested parcels of every neighbourhood in the district library (the target first), with their boundaries. */
+function loadDistrictTrainingPool(province: string, district: string, target: NeighborhoodStore): TrainingPool {
+    const districtDir = join(LIBRARY_ROOT, slugify(province), slugify(district));
+    const pool: TrainingPool = { parcels: [], boundaries: [], neighborhoods: [] };
+    const slugs = existsSync(districtDir) ? readdirSync(districtDir, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name) : [];
+    const targetSlug = target.dir.split(/[\\/]/).at(-1) as string;
+    for (const slug of [targetSlug, ...slugs.filter((s) => s !== targetSlug).sort()]) {
+        const store = slug === targetSlug ? target : new NeighborhoodStore(province, district, slug);
+        const meta = store.readMeta();
+        const parcels = store.loadParcels().filter((p) => p.properties.inTargetNeighborhood);
+        if (!meta || parcels.length === 0) continue;
+        pool.parcels.push(...parcels);
+        pool.boundaries.push(meta.boundary);
+        pool.neighborhoods.push(meta.neighborhood);
+    }
+    return pool;
+}
 
 async function main(): Promise<void> {
     const { values } = parseArgs({
@@ -31,6 +61,7 @@ async function main(): Promise<void> {
             neighborhood: { type: 'string' },
             start: { type: 'string', default: '2024-01-01' },
             end: { type: 'string', default: '2026-01-01' },
+            'own-training': { type: 'boolean', default: false },
         },
     });
     if (!values.province || !values.district || !values.neighborhood) {
@@ -39,19 +70,28 @@ async function main(): Promise<void> {
     }
     const store = new NeighborhoodStore(values.province, values.district, values.neighborhood);
     const meta = store.readMeta();
-    const parcels = store.loadParcels().filter((p) => p.properties.inTargetNeighborhood);
-    if (!meta || parcels.length === 0) {
-        throw new Error('Mahalle kütüphanesi boş; önce harvest çalıştırın.');
+    if (!meta) {
+        throw new Error('meta.json yok; önce harvest çalıştırın.');
     }
+    const parcels = store.loadParcels().filter((p) => p.properties.inTargetNeighborhood);
+    const pool = values['own-training']
+        ? { parcels, boundaries: [meta.boundary], neighborhoods: [meta.neighborhood] }
+        : loadDistrictTrainingPool(values.province, values.district, store);
+    if (pool.parcels.length === 0) {
+        throw new Error('İlçe kütüphanesinde parsel yok; önce harvest çalıştırın.');
+    }
+    console.log(`Hedef mahalle: ${parcels.length} parsel · eğitim havuzu: ${pool.parcels.length} parsel, ${pool.neighborhoods.length} mahalle (${pool.neighborhoods.join(', ')})`);
 
     const ee = await initEarthEngine();
     const region = ee.Geometry(meta.boundary);
-    const features = buildTeaFeatures(ee, region, values.start, values.end);
+    // Features are computed over every neighbourhood that contributes training parcels; classification is clipped to the target.
+    const featureRegion = pool.boundaries.length === 1 ? region : ee.FeatureCollection(pool.boundaries.map((b) => ee.Feature(ee.Geometry(b)))).geometry(1);
+    const features = buildTeaFeatures(ee, featureRegion, values.start, values.end);
     const bandNames: string[] = await evaluate(features.bandNames());
     console.log(`Öznitelik sayısı: ${bandNames.length} (${values.start} → ${values.end})`);
 
-    // ── Training samples from weakly labelled parcels ──
-    const labelled = labelParcels(parcels);
+    // ── Training samples from weakly labelled parcels (district pool) ──
+    const labelled = labelParcels(pool.parcels);
     const trainingParcels = labelled.filter((l) => l.label !== null);
     const parcelCollection = ee.FeatureCollection(
         trainingParcels.map((l) =>
@@ -124,7 +164,9 @@ async function main(): Promise<void> {
         .filter(ee.Filter.gte('areaM2', MIN_PATCH_M2));
 
     const [parcelStats, patchCollection] = await Promise.all([
-        evaluate<{ features: Array<{ properties: { key: string; tea_p?: number; tea?: number } }> }>(perParcel),
+        parcels.length === 0
+            ? Promise.resolve({ features: [] as Array<{ properties: { key: string; tea_p?: number; tea?: number } }> })
+            : evaluate<{ features: Array<{ properties: { key: string; tea_p?: number; tea?: number } }> }>(perParcel),
         evaluate<object>(patches),
     ]);
 
@@ -158,6 +200,8 @@ async function main(): Promise<void> {
         period: { start: values.start, end: values.end },
         model: {
             type: 'RandomForest(150), weak labels from TKGM deed title',
+            trainingNeighborhoods: pool.neighborhoods,
+            trainingParcels: trainingParcels.length,
             features: bandNames.length,
             threshold: TEA_THRESHOLD,
             trainPixels: trainCounts,

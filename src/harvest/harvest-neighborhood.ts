@@ -1,7 +1,7 @@
 import { pointOnFeature, feature } from '@turf/turf';
 import type { Position } from 'geojson';
 import { CoverageTracker, type CoverageOptions } from './coverage.ts';
-import { normalizeParcel, parcelKey } from '../tkgm/normalize.ts';
+import { normalizeParcel, parcelKey, sameNeighborhoodName } from '../tkgm/normalize.ts';
 import { TkgmQuotaExceededError, type TkgmClient } from '../tkgm/client.ts';
 import type { Parcel, TkgmRawParcel } from '../tkgm/types.ts';
 import type { NeighborhoodMeta, NeighborhoodStore } from '../library/store.ts';
@@ -27,7 +27,10 @@ export type HarvestOutcome = 'complete' | 'request_limit' | 'daily_quota';
 
 export interface HarvestResult {
     outcome: HarvestOutcome;
+    /** First cadastral mahalleId found inside the boundary (kept for the site bundle). */
     neighborhoodId: number | null;
+    /** Every cadastral mahalleId inside the boundary: former towns have one per sub-neighbourhood. */
+    neighborhoodIds: number[];
     parcels: Parcel[];
     queries: number;
     misses: number;
@@ -52,8 +55,9 @@ class NeighborhoodHarvest {
     private readonly tracker: CoverageTracker;
     private readonly known = new Map<string, Parcel>();
     private readonly missedKeys = new Set<string>();
-    private readonly scannedBlocks = new Set<number>();
-    private neighborhoodId: number | null = null;
+    /** "<mahalleId>/<block>" of every block scanned by number. */
+    private readonly scannedBlocks = new Set<string>();
+    private readonly neighborhoodIds = new Set<number>();
     private queries = 0;
     private misses = 0;
 
@@ -69,9 +73,11 @@ class NeighborhoodHarvest {
         this.resume();
         let outcome: HarvestOutcome = 'complete';
         try {
-            this.neighborhoodId ??= await this.discoverNeighborhoodId();
-            if (this.neighborhoodId !== null) {
-                await this.scanBlocks(this.neighborhoodId);
+            if (this.neighborhoodIds.size === 0) {
+                await this.discoverNeighborhoodIds();
+            }
+            for (const id of [...this.neighborhoodIds]) {
+                await this.scanBlocks(id);
             }
             await this.fillGaps();
         } catch (error) {
@@ -83,9 +89,11 @@ class NeighborhoodHarvest {
                 throw error;
             }
         }
+        const ids = [...this.neighborhoodIds].sort((a, b) => a - b);
         return {
             outcome,
-            neighborhoodId: this.neighborhoodId,
+            neighborhoodId: ids[0] ?? null,
+            neighborhoodIds: ids,
             parcels: [...this.known.values()],
             queries: this.queries,
             misses: this.misses,
@@ -95,11 +103,23 @@ class NeighborhoodHarvest {
     }
 
     private resume(): void {
-        for (const parcel of this.store.loadParcels()) {
-            this.known.set(parcel.properties.key, parcel);
-            if (parcel.properties.inTargetNeighborhood) {
-                this.neighborhoodId ??= parcel.properties.neighborhoodId;
+        // Membership is re-evaluated on every resume: the name rule may have improved since the record was stored
+        // (sub-neighbourhoods of former towns, ı/i spelling), so earlier "outside" parcels can join the target.
+        const stored = this.store.loadParcels();
+        let changed = false;
+        for (const parcel of stored) {
+            const inTarget = sameNeighborhoodName(parcel.properties.neighborhood, this.meta.neighborhood);
+            if (inTarget !== parcel.properties.inTargetNeighborhood) {
+                parcel.properties.inTargetNeighborhood = inTarget;
+                changed = true;
             }
+            this.known.set(parcel.properties.key, parcel);
+            if (inTarget) {
+                this.neighborhoodIds.add(parcel.properties.neighborhoodId);
+            }
+        }
+        if (changed) {
+            this.store.rewriteParcels(stored);
         }
         const probes = this.store.loadProbes();
         for (const probe of probes) {
@@ -123,23 +143,19 @@ class NeighborhoodHarvest {
     }
 
     /** The admin list only has a GUID; the numeric mahalleId comes from any parcel inside the boundary. */
-    private async discoverNeighborhoodId(): Promise<number | null> {
-        for (let attempt = 0; attempt < 20; attempt++) {
+    private async discoverNeighborhoodIds(): Promise<void> {
+        for (let attempt = 0; attempt < 20 && this.neighborhoodIds.size === 0; attempt++) {
             const probe = attempt === 0 ? pointOnFeature(feature(this.meta.boundary)).geometry.coordinates : this.tracker.nextProbe();
             if (!probe) {
-                return null;
+                return;
             }
-            const parcel = await this.queryPoint(probe);
-            if (parcel?.properties.inTargetNeighborhood) {
-                return parcel.properties.neighborhoodId;
-            }
+            await this.queryPoint(probe);
         }
-        return null;
     }
 
     private async scanBlocks(neighborhoodId: number): Promise<void> {
         const knownBlocks = [...this.known.values()]
-            .filter((p) => p.properties.inTargetNeighborhood)
+            .filter((p) => p.properties.inTargetNeighborhood && p.properties.neighborhoodId === neighborhoodId)
             .map((p) => Number(p.properties.block))
             .filter(Number.isInteger);
         const start = Math.min(FIRST_BLOCK, ...knownBlocks);
@@ -158,7 +174,7 @@ class NeighborhoodHarvest {
 
     /** Walks parcel numbers upward from `fromParcel` until MAX_PARCEL_GAP consecutive misses. */
     private async scanBlock(neighborhoodId: number, block: number, fromParcel: number): Promise<number> {
-        this.scannedBlocks.add(block);
+        this.scannedBlocks.add(`${neighborhoodId}/${block}`);
         let found = 0;
         let gap = 0;
         for (let parcelNo = fromParcel; gap < MAX_PARCEL_GAP; parcelNo++) {
@@ -193,17 +209,20 @@ class NeighborhoodHarvest {
     private async fillGaps(): Promise<void> {
         for (let probe = this.tracker.nextProbe(); probe; probe = this.tracker.nextProbe()) {
             const parcel = await this.queryPoint(probe);
-            const block = Number(parcel?.properties.block);
-            if (
-                parcel?.properties.inTargetNeighborhood &&
-                this.neighborhoodId !== null &&
-                Number.isInteger(block) &&
-                !this.scannedBlocks.has(block)
-            ) {
-                await this.scanBlock(this.neighborhoodId, block, 1);
-            } else if (parcel?.properties.inTargetNeighborhood && this.neighborhoodId !== null && Number.isInteger(block)) {
+            if (!parcel?.properties.inTargetNeighborhood) {
+                continue;
+            }
+            const id = parcel.properties.neighborhoodId;
+            const block = Number(parcel.properties.block);
+            if (!this.neighborhoodIds.has(id)) {
+                // A sub-neighbourhood (former town) seen for the first time: enumerate its blocks like the first one.
+                this.neighborhoodIds.add(id);
+                await this.scanBlocks(id);
+            } else if (Number.isInteger(block) && !this.scannedBlocks.has(`${id}/${block}`)) {
+                await this.scanBlock(id, block, 1);
+            } else if (Number.isInteger(block)) {
                 // Block was scanned but this parcel sat beyond a numbering gap: continue past it.
-                await this.scanBlock(this.neighborhoodId, block, Number(parcel.properties.parcel) + 1);
+                await this.scanBlock(id, block, Number(parcel.properties.parcel) + 1);
             }
         }
     }
@@ -232,6 +251,9 @@ class NeighborhoodHarvest {
             this.known.set(key, parcel);
             this.store.appendParcel(parcel);
             this.tracker.markParcels([parcel.geometry]);
+            if (parcel.properties.inTargetNeighborhood) {
+                this.neighborhoodIds.add(parcel.properties.neighborhoodId);
+            }
         }
         const result = isDuplicate ? 'duplicate' : 'parcel';
         if (kind === 'point' && probe) {

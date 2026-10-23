@@ -68,6 +68,41 @@ Varsayılan hız saniyede en fazla 1 istektir (`--min-interval-ms`, alt sınır 
 ölçek içindir; 55 ilçenin tamamı için ÇAYKUR–TKGM kurumsal protokolü (MEGSİS WFS) gerekir.
 `TkgmClient` bu geçişte değiştirilecek tek bileşendir.
 
+## Bölge genişletme (mahalle → ilçe → Karadeniz)
+
+Pilot Çataldere'den başlayarak bölge **mahalle mahalle** büyür; her mahalle kendi kütüphane klasörü ve kendi site
+paketiyle (`data/site/<il>-<ilçe>-<mahalle>.json`) gelir, site bütün paketleri yükler ve "Bölge" sekmesinde ilçe
+bazında toplar.
+
+```bash
+# Sıradaki mahalleleri seçmek: TKGM listesi, alan, komşuluk, kütüphane/site durumu
+npm run neighborhoods -- --province Trabzon --district Of --near Çataldere
+
+# Bir ya da daha çok mahalle için zincirin tamamı (her gün aynı komut; güncel adımlar atlanır)
+npm run pipeline -- --province Trabzon --district Of --neighborhoods "Tekoba,Gürpınar,Bölümlü,Uğurlu" --health-year 2026
+#   harvest → detect-tea → detect-pruning → imagery → scan-producers (sezonlar) → build-licensing
+#   → detect-pruning-radar → fuse-pruning → scan-health → export-site
+#   --skip harvest,radar   --only detect-tea,export-site   --force   --harvest-requests 80
+```
+
+Kurallar ve davranış:
+
+- **TKGM kotası paylaşılır.** Günde ~230 parsel sorgusu vardır; birden çok mahalle için `--harvest-requests` ile bütçe
+  bölünür, kota dolunca zincir eldeki parsellerle devam eder, ertesi gün aynı komut kaldığı yerden toplar.
+- **Sınıflandırıcı ilçe havuzundan eğitilir.** `detect-tea` ilçe kütüphanesindeki bütün mahallelerin tapu nitelikli
+  parsellerini eğitim havuzu yapar (`model.trainingNeighborhoods`); parseli henüz az olan yeni mahalle de ilk günden
+  taranır. `--own-training` yalnız hedef mahalleyle eğitir (pilot davranışı).
+- **Parselsiz çaylık = serbest yama.** Çay tespiti ve budama kararı mahalle sınırının tamamında çalışır; parseli
+  çekilmemiş çaylıklar serbest birim olarak yargılanır, parsel gelince sahibine bağlanır.
+- **Eski beldeler.** Belediyesi kapatılmış yerlerde kadastro mahalleleri alt isimlerle sürer ("Gürpınar/Fatih",
+  "Gürpınar/Yenimahalle"); toplayıcı bunları tek idari sınır altında birleştirir, her kadastro mahalleId'si için ayrı
+  ada taraması yapar ve kaldığı yerden devam ederken eski kayıtların üyeliğini yeniden değerlendirir.
+- **Koherans kanalı isteğe bağlıdır.** SLC indirme ve SNAP işlemesi mahalle başına saatler sürer; yeni mahalleler önce
+  optik + GRD ile değerlendirilir, koherans sonradan eklenebilir.
+- **Site paketi mahalle başınadır.** `export-site` çıktılarını `cayhesabim/apps/api/src/tea-inventory/seed-data/`
+  (paket) ve `cayhesabim/apps/web/public/inventory-imagery/<kod>/` (görüntüler) altına kopyalayın; API yeniden
+  başlayınca yalnız `generatedAt`'i değişen paketleri içe aktarır, sitedeki sicil işlemleri korunur.
+
 ## Budama takibi (Sentinel, kalibre edilmedi)
 
 ```bash

@@ -15,10 +15,28 @@ export function parcelKey(neighborhoodId: number, block: string, parcel: string)
     return `${neighborhoodId}/${block.trim()}/${parcel.trim()}`;
 }
 
-/** "Çataldere Mah." and "Çataldere" compare equal (admin lists add a suffix, parcel records do not). */
+/**
+ * Neighbourhood name as the cadastre and the admin list spell it, folded for comparison: suffixes
+ * ("Mah.", "Mahallesi", "Köyü") dropped, Turkish lower case, dotless ı folded to i (the admin list writes
+ * "Gürpinar", parcel records "Gürpınar").
+ */
+export function canonicalNeighborhoodName(name: string): string {
+    return name
+        .replace(/\s+(mah\.?|mahallesi|köyü)$/i, '')
+        .trim()
+        .toLocaleLowerCase('tr')
+        .replace(/ı/g, 'i');
+}
+
+/**
+ * "Çataldere Mah." and "Çataldere" compare equal (admin lists add a suffix, parcel records do not).
+ * Former towns (belde) keep cadastral sub-neighbourhoods such as "Gürpınar/Fatih" and "Gürpınar/Yenimahalle"
+ * under one admin boundary "Gürpinar Mah.": a parcel whose name is "<target>/<part>" belongs to the target.
+ */
 export function sameNeighborhoodName(a: string, b: string): boolean {
-    const clean = (name: string) => name.replace(/\s+(mah\.?|mahallesi|köyü)$/i, '').trim().toLocaleLowerCase('tr');
-    return clean(a) === clean(b);
+    const ca = canonicalNeighborhoodName(a);
+    const cb = canonicalNeighborhoodName(b);
+    return ca === cb || ca.startsWith(`${cb}/`) || cb.startsWith(`${ca}/`);
 }
 
 export function normalizeParcel(raw: TkgmRawParcel, targetNeighborhoodName: string): Parcel {
