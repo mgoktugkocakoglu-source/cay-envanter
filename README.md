@@ -99,9 +99,10 @@ Kurallar ve davranış:
   ada taraması yapar ve kaldığı yerden devam ederken eski kayıtların üyeliğini yeniden değerlendirir.
 - **Koherans kanalı isteğe bağlıdır.** SLC indirme ve SNAP işlemesi mahalle başına saatler sürer; yeni mahalleler önce
   optik + GRD ile değerlendirilir, koherans sonradan eklenebilir.
-- **Site paketi mahalle başınadır.** `export-site` çıktılarını `cayhesabim/apps/api/src/tea-inventory/seed-data/`
-  (paket) ve `cayhesabim/apps/web/public/inventory-imagery/<kod>/` (görüntüler) altına kopyalayın; API yeniden
-  başlayınca yalnız `generatedAt`'i değişen paketleri içe aktarır, sitedeki sicil işlemleri korunur.
+- **Site paketi mahalle başınadır.** `node scripts/sync-site.mjs [--site ../cayhesabim]` bütün paketleri
+  `cayhesabim/apps/api/src/tea-inventory/seed-data/` altına, görüntüleri `apps/web/public/inventory-imagery/<kod>/`
+  altına kopyalar; API yeniden başlayınca yalnız `generatedAt`'i değişen paketleri içe aktarır, sitedeki sicil
+  işlemleri korunur.
 
 ## Budama takibi (Sentinel, kalibre edilmedi)
 
