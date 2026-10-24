@@ -158,7 +158,9 @@ class NeighborhoodHarvest {
             .filter((p) => p.properties.inTargetNeighborhood && p.properties.neighborhoodId === neighborhoodId)
             .map((p) => Number(p.properties.block))
             .filter(Number.isInteger);
-        const start = Math.min(FIRST_BLOCK, ...knownBlocks);
+        // Start where the cadastre actually numbers this neighbourhood (former towns begin far above 101);
+        // the downward pass still reaches the lower blocks, and block 0 is always tried.
+        const start = knownBlocks.length > 0 ? Math.min(...knownBlocks) : FIRST_BLOCK;
         await this.scanBlockRange(neighborhoodId, start, 1);
         await this.scanBlockRange(neighborhoodId, start - 1, -1);
         await this.scanBlock(neighborhoodId, 0, 1);
