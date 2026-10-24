@@ -2,10 +2,11 @@ import { existsSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import type { MultiPolygon, Polygon } from 'geojson';
+import { centroid, distance, feature } from '@turf/turf';
 import { initEarthEngine, evaluate } from '../ee/session.ts';
 import { buildTeaFeatures } from '../ee/tea-features.ts';
 import { labelParcels } from '../ee/weak-labels.ts';
-import { LIBRARY_ROOT, NeighborhoodStore, slugify } from '../library/store.ts';
+import { LIBRARY_ROOT, NeighborhoodStore, slugify, type NeighborhoodMeta } from '../library/store.ts';
 import { isTeaTitle } from '../tkgm/titles.ts';
 import type { Parcel } from '../tkgm/types.ts';
 
@@ -35,17 +36,34 @@ interface TrainingPool {
     neighborhoods: string[];
 }
 
-/** Harvested parcels of every neighbourhood in the district library (the target first), with their boundaries. */
-function loadDistrictTrainingPool(province: string, district: string, target: NeighborhoodStore): TrainingPool {
+/** Enough labelled parcels for the classifier; beyond this the pool stops growing. */
+const POOL_TARGET_PARCELS = 700;
+/** Upper bound on pooled neighbourhoods: Earth Engine samples all of them in one job (memory). */
+const POOL_MAX_NEIGHBORHOODS = 6;
+
+/**
+ * Harvested parcels of the target plus its nearest neighbourhoods in the district library, closest first,
+ * until the pool has POOL_TARGET_PARCELS parcels or POOL_MAX_NEIGHBORHOODS members.
+ */
+function loadDistrictTrainingPool(province: string, district: string, target: NeighborhoodStore, targetMeta: NeighborhoodMeta): TrainingPool {
     const districtDir = join(LIBRARY_ROOT, slugify(province), slugify(district));
     const pool: TrainingPool = { parcels: [], boundaries: [], neighborhoods: [] };
     const slugs = existsSync(districtDir) ? readdirSync(districtDir, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name) : [];
     const targetSlug = target.dir.split(/[\\/]/).at(-1) as string;
-    for (const slug of [targetSlug, ...slugs.filter((s) => s !== targetSlug).sort()]) {
-        const store = slug === targetSlug ? target : new NeighborhoodStore(province, district, slug);
-        const meta = store.readMeta();
+    const targetCentre = centroid(feature(targetMeta.boundary));
+    const candidates = slugs
+        .filter((s) => s !== targetSlug)
+        .map((slug) => {
+            const store = new NeighborhoodStore(province, district, slug);
+            const meta = store.readMeta();
+            return meta ? { store, meta, km: distance(targetCentre, centroid(feature(meta.boundary))) } : null;
+        })
+        .filter((c): c is { store: NeighborhoodStore; meta: NeighborhoodMeta; km: number } => c !== null)
+        .sort((a, b) => a.km - b.km);
+    for (const { store, meta } of [{ store: target, meta: targetMeta }, ...candidates]) {
+        if (store !== target && (pool.parcels.length >= POOL_TARGET_PARCELS || pool.neighborhoods.length >= POOL_MAX_NEIGHBORHOODS)) break;
         const parcels = store.loadParcels().filter((p) => p.properties.inTargetNeighborhood);
-        if (!meta || parcels.length === 0) continue;
+        if (parcels.length === 0) continue;
         pool.parcels.push(...parcels);
         pool.boundaries.push(meta.boundary);
         pool.neighborhoods.push(meta.neighborhood);
@@ -76,7 +94,7 @@ async function main(): Promise<void> {
     const parcels = store.loadParcels().filter((p) => p.properties.inTargetNeighborhood);
     const pool = values['own-training']
         ? { parcels, boundaries: [meta.boundary], neighborhoods: [meta.neighborhood] }
-        : loadDistrictTrainingPool(values.province, values.district, store);
+        : loadDistrictTrainingPool(values.province, values.district, store, meta);
     if (pool.parcels.length === 0) {
         throw new Error('İlçe kütüphanesinde parsel yok; önce harvest çalıştırın.');
     }
@@ -107,7 +125,7 @@ async function main(): Promise<void> {
         collection: parcelCollection,
         properties: ['label', 'split', 'nature', 'key'],
         scale: SCALE_M,
-        tileScale: 4,
+        tileScale: 8,
     });
     const natures = [...new Set(trainingParcels.map((l) => l.parcel.properties.nature.toLocaleLowerCase('tr')))];
     const capped = (split: string) =>
