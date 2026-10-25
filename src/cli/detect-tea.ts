@@ -2,7 +2,7 @@ import { existsSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import type { MultiPolygon, Polygon } from 'geojson';
-import { centroid, distance, feature } from '@turf/turf';
+import { area, centroid, distance, feature } from '@turf/turf';
 import { initEarthEngine, evaluate } from '../ee/session.ts';
 import { buildTeaFeatures } from '../ee/tea-features.ts';
 import { labelParcels } from '../ee/weak-labels.ts';
@@ -38,8 +38,8 @@ interface TrainingPool {
 
 /** Enough labelled parcels for the classifier; beyond this the pool stops growing. */
 const POOL_TARGET_PARCELS = 700;
-/** Upper bound on pooled neighbourhoods: Earth Engine samples all of them in one job (memory). */
-const POOL_MAX_NEIGHBORHOODS = 6;
+/** Upper bound on the pooled boundary area: Earth Engine samples all of it in one job (memory). */
+const POOL_MAX_HA = 6500;
 
 /**
  * Harvested parcels of the target plus its nearest neighbourhoods in the district library, closest first,
@@ -60,10 +60,15 @@ function loadDistrictTrainingPool(province: string, district: string, target: Ne
         })
         .filter((c): c is { store: NeighborhoodStore; meta: NeighborhoodMeta; km: number } => c !== null)
         .sort((a, b) => a.km - b.km);
+    let pooledHa = 0;
     for (const { store, meta } of [{ store: target, meta: targetMeta }, ...candidates]) {
-        if (store !== target && (pool.parcels.length >= POOL_TARGET_PARCELS || pool.neighborhoods.length >= POOL_MAX_NEIGHBORHOODS)) break;
+        if (store !== target && pool.parcels.length >= POOL_TARGET_PARCELS) break;
         const parcels = store.loadParcels().filter((p) => p.properties.inTargetNeighborhood);
         if (parcels.length === 0) continue;
+        const ha = area(feature(meta.boundary)) / 1e4;
+        // A neighbourhood that would push the sampled region past the memory budget is skipped, not the whole search.
+        if (store !== target && pooledHa + ha > POOL_MAX_HA) continue;
+        pooledHa += ha;
         pool.parcels.push(...parcels);
         pool.boundaries.push(meta.boundary);
         pool.neighborhoods.push(meta.neighborhood);
