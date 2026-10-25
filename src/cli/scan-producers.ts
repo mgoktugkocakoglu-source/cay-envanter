@@ -205,7 +205,7 @@ async function main(): Promise<void> {
     console.log('Olay poligonları çıkarılıyor…');
     const seasonMap = shareImages.length > 0 ? ee.ImageCollection(shareImages).max() : ee.Image(0).updateMask(teaMask);
     const patches = await evaluate<FeatureCollection<Poly>>(
-        seasonMap.gte(EVENT_SHARE).selfMask().reduceToVectors({ geometry: region, scale: SCALE_M, geometryType: 'polygon', eightConnected: true, maxPixels: 1e8 }),
+        seasonMap.gte(EVENT_SHARE).selfMask().reduceToVectors({ geometry: region, scale: SCALE_M, geometryType: 'polygon', eightConnected: true, maxPixels: 1e8, tileScale: 8 }),
     );
     const patchFeatures = patches.features.map((f) => feature(f.geometry as Poly));
     const seasonPruned = patchFeatures.length === 0 ? null : patchFeatures.length === 1 ? patchFeatures[0] : union(featureCollection(patchFeatures));
