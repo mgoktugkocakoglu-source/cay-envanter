@@ -19,6 +19,8 @@ Adım adları: harvest, detect-tea, detect-pruning, imagery, scan-producers, bui
 `;
 
 const RETRY_DELAY_S = 60;
+/** No stage legitimately runs this long (worst observed: 17 min); a hung Earth Engine socket is killed and retried. */
+const STAGE_TIMEOUT_MS = 60 * 60 * 1000;
 
 type StageName = 'harvest' | 'detect-tea' | 'detect-pruning' | 'imagery' | 'scan-producers' | 'build-licensing' | 'radar' | 'fuse' | 'health' | 'export-site';
 const STAGE_ORDER: StageName[] = ['harvest', 'detect-tea', 'detect-pruning', 'imagery', 'scan-producers', 'build-licensing', 'radar', 'fuse', 'health', 'export-site'];
@@ -44,13 +46,15 @@ function isFresh(step: Step): boolean {
 }
 
 function runNode(script: string, args: string[]): number {
-    const result = spawnSync(process.execPath, [join('src', 'cli', `${script}.ts`), ...args], { stdio: 'inherit', cwd: process.cwd() });
+    const result = spawnSync(process.execPath, [join('src', 'cli', `${script}.ts`), ...args], { stdio: 'inherit', cwd: process.cwd(), timeout: STAGE_TIMEOUT_MS, killSignal: 'SIGKILL' });
+    if (result.error) console.error(`   ! ${result.error.message}`);
     return result.status ?? 1;
 }
 
 function runPython(script: string, args: string[]): number {
     const python = process.platform === 'win32' ? join('.venv', 'Scripts', 'python.exe') : join('.venv', 'bin', 'python');
-    const result = spawnSync(python, [join('py', script), ...args], { stdio: 'inherit', cwd: process.cwd() });
+    const result = spawnSync(python, [join('py', script), ...args], { stdio: 'inherit', cwd: process.cwd(), timeout: STAGE_TIMEOUT_MS, killSignal: 'SIGKILL' });
+    if (result.error) console.error(`   ! ${result.error.message}`);
     return result.status ?? 1;
 }
 
