@@ -215,3 +215,67 @@ export async function landUseHistory(ee: EE, boundary: Poly, parcels: ParcelInpu
     out.boundaryWorldcover = fractionsOf(wcBoundary.Map, WORLDCOVER);
     return out;
 }
+
+/** Landsat summer NDVI composites by period: vegetation density history back to the 1980s. */
+export interface NdviHistoryRaw {
+    periods: Array<{ period: string; from: number; to: number; scenes: number }>;
+    parcels: Record<string, Array<{ period: string; ndvi: number | null; denseShare: number | null }>>;
+    boundary: Array<{ period: string; ndvi: number | null; denseShare: number | null }>;
+}
+
+export const NDVI_PERIODS: Array<[number, number]> = [[1986, 1990], [1996, 2000], [2006, 2010], [2016, 2020], [2022, 2026]];
+const DENSE_NDVI = 0.6;
+
+function landsatNdvi(ee: EE, region: EE, from: number, to: number): EE {
+    const mask = (img: EE) => {
+        const qa = img.select('QA_PIXEL');
+        // Bits 3 (cloud), 4 (cloud shadow), 5 (snow) and 1 (dilated cloud) clear.
+        const clear = qa.bitwiseAnd(1 << 3).eq(0).and(qa.bitwiseAnd(1 << 4).eq(0)).and(qa.bitwiseAnd(1 << 5).eq(0)).and(qa.bitwiseAnd(1 << 1).eq(0));
+        return img.updateMask(clear);
+    };
+    const scale = (img: EE) => img.select('SR_B.').multiply(0.0000275).add(-0.2);
+    const tm = (id: string, red: string, nir: string) =>
+        ee
+            .ImageCollection(id)
+            .filterBounds(region)
+            .filterDate(`${from}-06-01`, `${to}-09-30`)
+            .filter(ee.Filter.calendarRange(6, 9, 'month'))
+            .map((img: EE) => {
+                const s = scale(mask(img));
+                return s.normalizedDifference([nir, red]).rename('ndvi').copyProperties(img, ['system:time_start']);
+            });
+    const col = tm('LANDSAT/LT05/C02/T1_L2', 'SR_B3', 'SR_B4').merge(tm('LANDSAT/LE07/C02/T1_L2', 'SR_B3', 'SR_B4')).merge(tm('LANDSAT/LC08/C02/T1_L2', 'SR_B4', 'SR_B5')).merge(tm('LANDSAT/LC09/C02/T1_L2', 'SR_B4', 'SR_B5'));
+    return col;
+}
+
+export async function ndviHistory(ee: EE, boundary: Poly, parcels: ParcelInput[]): Promise<NdviHistoryRaw> {
+    const region = ee.Geometry(boundary);
+    const fc = collection(ee, parcels);
+    const out: NdviHistoryRaw = { periods: [], parcels: {}, boundary: [] };
+    for (const p of parcels) out.parcels[p.key] = [];
+    for (const [from, to] of NDVI_PERIODS) {
+        const period = `${from}–${to}`;
+        const col = landsatNdvi(ee, region, from, to);
+        const scenes: number = await evaluate(col.size());
+        if (scenes === 0) {
+            out.periods.push({ period, from, to, scenes: 0 });
+            for (const p of parcels) out.parcels[p.key]!.push({ period, ndvi: null, denseShare: null });
+            out.boundary.push({ period, ndvi: null, denseShare: null });
+            continue;
+        }
+        const median = col.median().select('ndvi');
+        const stack = median.addBands(median.gte(DENSE_NDVI).rename('dense'));
+        const [pr, br] = await Promise.all([
+            parcels.length === 0
+                ? Promise.resolve({ features: [] as Array<{ properties: Record<string, unknown> }> })
+                : evaluate<{ features: Array<{ properties: Record<string, unknown> }> }>(stack.reduceRegions({ collection: fc, reducer: ee.Reducer.mean(), scale: 30, tileScale: 4 })),
+            evaluate<Record<string, number | null>>(stack.reduceRegion({ reducer: ee.Reducer.mean(), geometry: region, scale: 30, maxPixels: 1e9, tileScale: 4 })),
+        ]);
+        out.periods.push({ period, from, to, scenes });
+        for (const f of pr.features) {
+            out.parcels[String(f.properties.key)]!.push({ period, ndvi: num(f.properties.ndvi) === null ? null : Math.round(num(f.properties.ndvi)! * 1000) / 1000, denseShare: num(f.properties.dense) === null ? null : Math.round(num(f.properties.dense)! * 1000) / 1000 });
+        }
+        out.boundary.push({ period, ndvi: num(br.ndvi) === null ? null : Math.round(num(br.ndvi)! * 1000) / 1000, denseShare: num(br.dense) === null ? null : Math.round(num(br.dense)! * 1000) / 1000 });
+    }
+    return out;
+}

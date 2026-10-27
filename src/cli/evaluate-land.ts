@@ -4,8 +4,8 @@ import { parseArgs } from 'node:util';
 import type { FeatureCollection, MultiPolygon, Polygon } from 'geojson';
 import { initEarthEngine } from '../ee/session.ts';
 import { NeighborhoodStore } from '../library/store.ts';
-import { fetchDailyClimate, meanElevation, parcelClimate, summariseClimate, type ClimateSummary, type DailyClimate } from '../land/climate.ts';
-import { landUseHistory, terrainAndSoil, type LandUseRaw, type SoilRaw, type TerrainRaw } from '../land/ee-layers.ts';
+import { loadDailyClimate, meanElevation, parcelClimate, summariseClimate, type ClimateSummary, type DailyClimate } from '../land/climate.ts';
+import { landUseHistory, ndviHistory, terrainAndSoil, type LandUseRaw, type NdviHistoryRaw, type SoilRaw, type TerrainRaw } from '../land/ee-layers.ts';
 import {
     CROPS,
     LAND_RULES,
@@ -30,16 +30,18 @@ import {
     type ObservedUse,
     type ParcelLandEvaluation,
 } from '../land/model.ts';
+import { CROP_RULES } from '../land/rules.ts';
+import { SOURCES, STATIONS, SUPPORT_PRODUCT_TO_CROP, districtFactsOf, type DistrictFacts, type SourceRef, type StationNormals } from '../land/sources.ts';
 
 type Poly = Polygon | MultiPolygon;
 
 const USAGE = `Toprak Koruma ve Arazi Değerlendirme (ayrı modül): her parsel için topografya (radar DEM), toprak, akarsu/taşkın,
-mevcut kullanım (tapu niteliği ↔ uydu, yıllık değişim), erozyon, arazi kabiliyet sınıfı (AKK), 5403 sınıf önerisi ve
-ürün uygunluğu; mahalle için 2016'dan bugüne günlük iklim kaydı (sıcaklık, nem, yağış) ve anomaliler.
+mevcut kullanım (tapu niteliği ↔ uydu, 1986'dan bugüne örtü tarihi), erozyon, arazi kabiliyet sınıfı (AKK), 5403 sınıf önerisi
+ve kaynaklı ürün uygunluğu; mahalle için MGM normallerine bağlanmış 1991'den bugüne günlük iklim kaydı, indisler ve anomaliler.
 
-  npm run evaluate-land -- --province Trabzon --district Of --neighborhood Çataldere [--from 2016] [--refetch]
+  npm run evaluate-land -- --province Trabzon --district Of --neighborhood Çataldere [--from 1991] [--refetch]
 
-Çıktı: land/evaluation.json (ham katmanlar land/raw-*.json önbelleğinde)
+Çıktı: land/evaluation.json (ham katmanlar land/raw-*.json ve land/climate/climate-<yıl>.json önbelleğinde)
 `;
 
 interface ParcelProps {
@@ -56,10 +58,16 @@ export interface LandEvaluationFile {
     method: string;
     rules: typeof LAND_RULES;
     crops: typeof CROPS;
+    cropRules: typeof CROP_RULES;
+    sources: SourceRef[];
+    stations: StationNormals[];
+    district: DistrictFacts | null;
     neighbourhood: {
         boundaryAreaM2: number;
         climate: ClimateSummary;
         landUse: { years: number[]; boundary: LandUseRaw['boundary']; worldcover: LandUseRaw['boundaryWorldcover'] };
+        ndviHistory: NdviHistoryRaw['boundary'];
+        ndviPeriods: NdviHistoryRaw['periods'];
     };
     summary: {
         parcels: number;
@@ -70,7 +78,6 @@ export interface LandEvaluationFile {
         byErosion: Record<ErosionClass | 'no_data', number>;
         mismatches: Record<MismatchFlag, number>;
         suitabilityMean: Record<CropKey, number>;
-        /** Parcels where the best-scoring crop differs from the observed use and scores ≥ 70. */
         conversionCandidates: number;
     };
     parcels: ParcelLandEvaluation[];
@@ -82,7 +89,7 @@ async function main(): Promise<void> {
             province: { type: 'string' },
             district: { type: 'string' },
             neighborhood: { type: 'string' },
-            from: { type: 'string', default: '2016' },
+            from: { type: 'string', default: '1991' },
             refetch: { type: 'boolean', default: false },
         },
     });
@@ -94,9 +101,7 @@ async function main(): Promise<void> {
     const meta = store.readMeta();
     if (!meta) throw new Error('meta.json yok; önce harvest çalıştırın.');
     const parcelsPath = join(store.dir, 'parcels-tea.geojson');
-    const parcels = existsSync(parcelsPath)
-        ? (JSON.parse(readFileSync(parcelsPath, 'utf8')) as FeatureCollection<Poly, ParcelProps>).features
-        : [];
+    const parcels = existsSync(parcelsPath) ? (JSON.parse(readFileSync(parcelsPath, 'utf8')) as FeatureCollection<Poly, ParcelProps>).features : [];
     const summaryFile = join(store.dir, 'summary.json');
     const boundaryAreaM2 = existsSync(summaryFile) ? ((JSON.parse(readFileSync(summaryFile, 'utf8')) as { boundaryAreaM2?: number }).boundaryAreaM2 ?? 0) : 0;
     const fromYear = Number(values.from);
@@ -104,7 +109,9 @@ async function main(): Promise<void> {
     const thisYear = Number(today.slice(0, 4));
     const outDir = join(store.dir, 'land');
     mkdirSync(outDir, { recursive: true });
-    console.log(`${meta.neighborhood}: ${parcels.length} parsel · iklim ${fromYear} → ${today}`);
+    const district = districtFactsOf(meta.province, meta.district);
+    const supportedCrops = new Set<CropKey>((district?.supportedProducts?.products ?? []).map((p) => SUPPORT_PRODUCT_TO_CROP[p]).filter((c): c is string => !!c) as CropKey[]);
+    console.log(`${meta.neighborhood}: ${parcels.length} parsel · iklim ${fromYear} → ${today} · ilçe destek listesi: ${district?.supportedProducts?.products.join(', ') ?? 'yok'}`);
 
     const cached = <T>(name: string, build: () => Promise<T>): Promise<T> => {
         const path = join(outDir, name);
@@ -119,29 +126,25 @@ async function main(): Promise<void> {
     };
     const ee = await initEarthEngine();
     const inputs = parcels.map((f) => ({ key: f.properties.key, geometry: f.geometry }));
-    console.log('Topografya (Copernicus DEM), hidroloji (MERIT, JRC) ve toprak (SoilGrids)…');
+    console.log('Topografya (Copernicus DEM), hidroloji (MERIT, JRC) ve toprak (OpenLandMap)…');
     const layers = await cached<{ terrain: Record<string, TerrainRaw>; soil: Record<string, SoilRaw> }>('raw-layers.json', () => terrainAndSoil(ee, inputs));
     console.log(`  ${Object.keys(layers.terrain).length} parselde topografya, ${Object.keys(layers.soil).length} parselde toprak`);
     console.log('Arazi kullanımı (Dynamic World yıllık, WorldCover 2021)…');
-    const landUse = await cached<LandUseRaw>('raw-landuse.json', () => landUseHistory(ee, meta.boundary, inputs, Math.max(2017, fromYear), thisYear));
+    const landUse = await cached<LandUseRaw>('raw-landuse.json', () => landUseHistory(ee, meta.boundary, inputs, 2017, thisYear));
     console.log(`  yıllar: ${landUse.years.join(', ')}`);
+    console.log('Bitki örtüsü tarihi (Landsat NDVI 1986 →)…');
+    const ndvi = await cached<NdviHistoryRaw>('raw-ndvi.json', () => ndviHistory(ee, meta.boundary, inputs));
+    console.log(`  ${ndvi.periods.map((p) => `${p.period} (${p.scenes} sahne)`).join(', ')}`);
+
     // Climate reference height: where people farm (tea parcels, else all parcels, else the tea patches), not the ridges.
     const parcelElevs = parcels.map((f) => ({ tea: (f.properties.teaShare ?? 0) >= 0.3, e: layers.terrain[f.properties.key]?.elevationM ?? null })).filter((x): x is { tea: boolean; e: number } => x.e !== null);
     const median = (xs: number[]) => (xs.length ? [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)]! : null);
     const teaPatchesPath = join(store.dir, 'tea-patches.geojson');
     const patchGeoms = existsSync(teaPatchesPath) ? (JSON.parse(readFileSync(teaPatchesPath, 'utf8')) as FeatureCollection<Poly>).features.map((f) => f.geometry) : [];
     const refElev = median(parcelElevs.filter((x) => x.tea).map((x) => x.e)) ?? median(parcelElevs.map((x) => x.e)) ?? (await meanElevation(ee, patchGeoms.slice(0, 400)));
-    console.log(`İklim (ERA5-Land + CHIRPS günlük), referans yükselti ${refElev === null ? 'sınır ortalaması' : `${Math.round(refElev)} m`}…`);
-    const climateCache = join(outDir, 'raw-climate.json');
-    if (existsSync(climateCache) && refElev !== null) {
-        const prev = JSON.parse(readFileSync(climateCache, 'utf8')) as DailyClimate;
-        if (!prev.lapse || Math.abs(prev.lapse.neighbourhoodElevationM - refElev) > 50) {
-            console.log('  referans yükselti değişti, iklim yeniden çekiliyor');
-            values.refetch = true;
-        }
-    }
-    const daily = await cached<DailyClimate>('raw-climate.json', () => fetchDailyClimate(ee, meta.boundary, `${fromYear}-01-01`, today, refElev));
-    console.log(`  ${daily.dates.length} gün (${daily.dates[0]} → ${daily.dates.at(-1)})`);
+    console.log(`İklim (ERA5-Land + CHIRPS günlük, MGM normallerine bağlı), referans yükselti ${refElev === null ? 'sınır ortalaması' : `${Math.round(refElev)} m`}…`);
+    const daily: DailyClimate = await loadDailyClimate(ee, meta.boundary, fromYear, today, refElev, join(outDir, 'climate'), values.refetch, (s) => console.log(s));
+    console.log(`  ${daily.dates.length} gün (${daily.dates[0]} → ${daily.dates.at(-1)}); istasyonlar ${daily.anchor.stations.map((s) => `${s.name} ${Math.round(s.weight * 100)}% (${s.distanceKm} km)`).join(', ')}; normal yağış ${daily.anchor.normal.annualPrecipMm} mm, ortalama ${daily.anchor.normal.annualTmean} °C`);
     const climate = summariseClimate(daily);
     const recentPrecip = climate.yearly.filter((y) => climate.recentYears.includes(Number(y.period)));
     const annualPrecip = recentPrecip.length ? recentPrecip.reduce((s, y) => s + y.precipMm, 0) / recentPrecip.length : null;
@@ -162,9 +165,11 @@ async function main(): Promise<void> {
         const last = [...history].reverse().find((h) => h.dominant);
         const change = first && last && first.year !== last.year && first.dominant !== last.dominant ? { from: first.dominant!, to: last.dominant!, fromYear: first.year, toYear: last.year } : null;
         const erosion = erosionOf(terrain, soil, observed, annualPrecip);
-        const capability = capabilityOf(terrain, soil, erosion.class, observed, declared);
-        const floodProne = capability.limitations.some((l) => l.startsWith('Taşkın') || l.startsWith('Dere kenarı'));
-        const suitability = suitabilityOf(terrain, soil, parcelClimate(daily, climate.recentYears, terrain.elevationM), erosion.class, floodProne);
+        const floodProne = (terrain.handM ?? 99) <= LAND_RULES.floodProne.maxHandM && (terrain.streamDistM ?? 9999) <= LAND_RULES.floodProne.maxStreamDistM;
+        const pc = parcelClimate(daily, climate.recentYears, terrain.elevationM);
+        const suitability = suitabilityOf({ terrain, soil, climate: pc, erosion: erosion.class, floodProne, supportedCrops });
+        const perennialSuitable = (suitability.find((s) => s.crop === 'tea')?.score ?? 0) >= 60 || (suitability.find((s) => s.crop === 'hazelnut')?.score ?? 0) >= 60;
+        const capability = capabilityOf(terrain, soil, erosion.class, observed, declared, perennialSuitable);
         const slope = slopeClassOf(terrain.slopePct);
         const base: Omit<ParcelLandEvaluation, 'recommendations'> = {
             key: p.key,
@@ -174,9 +179,10 @@ async function main(): Promise<void> {
             areaM2: Math.round(p.geometryAreaM2),
             terrain: { ...terrain, slopeClass: slope.code, slopeLabel: slope.label, aspectLabel: aspectLabel(terrain.aspectDeg) },
             soil: { ...soil, textureLabel: textureLabel(soil.textureCode), phLabel: phLabel(soil.ph) },
-            landUse: { declared, observed, teaShare: p.teaShare, latestYear, latest, history, worldcover: landUse.worldcover[p.key] ?? {}, mismatches, change },
+            landUse: { declared, observed, teaShare: p.teaShare, latestYear, latest, history, worldcover: landUse.worldcover[p.key] ?? {}, mismatches, change, ndviHistory: ndvi.parcels[p.key] ?? [] },
             erosion,
             capability,
+            climate: pc,
             suitability,
         };
         evaluated.push({ ...base, recommendations: recommendationsOf(base) });
@@ -206,10 +212,14 @@ async function main(): Promise<void> {
     };
     const file: LandEvaluationFile = {
         generatedAt: new Date().toISOString(),
-        method: 'Masa başı ön değerlendirme: Copernicus DEM (radar) eğim/bakı/HAND, SoilGrids toprak, Dynamic World yıllık arazi örtüsü, RUSLE-tipi erozyon indeksi, AKK sınıf yaklaşımı, 5403 sınıf önerisi, ürün uygunluk puanları; ERA5-Land/CHIRPS iklim kaydı',
+        method: 'Masa başı ön değerlendirme: Copernicus DEM (radar) eğim/bakı/HAND, OpenLandMap toprak, Dynamic World yıllık arazi örtüsü + Landsat NDVI 1986→, Trabzon ölçekli RUSLE indeksi, AKK sınıf yaklaşımı (USDA/Teknik Talimat), 5403 ve 2026 Yönetmeliği sınıf önerisi, kaynaklı ürün uygunluk puanları (TAGEM/KTAE/üniversite/coğrafi işaret eşikleri), ERA5-Land/CHIRPS iklim kaydı MGM istasyon normallerine bağlı, Erinç/De Martonne indisleri',
         rules: LAND_RULES,
         crops: CROPS,
-        neighbourhood: { boundaryAreaM2, climate, landUse: { years: landUse.years, boundary: landUse.boundary, worldcover: landUse.boundaryWorldcover } },
+        cropRules: CROP_RULES,
+        sources: SOURCES,
+        stations: STATIONS,
+        district,
+        neighbourhood: { boundaryAreaM2, climate, landUse: { years: landUse.years, boundary: landUse.boundary, worldcover: landUse.boundaryWorldcover }, ndviHistory: ndvi.boundary, ndviPeriods: ndvi.periods },
         summary,
         parcels: evaluated,
     };
@@ -217,7 +227,8 @@ async function main(): Promise<void> {
     console.log(`AKK: ${JSON.stringify(summary.byAkk)}`);
     console.log(`5403: ${JSON.stringify(summary.byLaw5403)} · kullanım ${JSON.stringify(summary.byObserved)}`);
     console.log(`Uyumsuzluk: ${JSON.stringify(summary.mismatches)} · erozyon ${JSON.stringify(summary.byErosion)}`);
-    console.log(`İklim: ${climate.yearly.length} tam yıl, son 5 yıl − ilk 5 yıl: sıcaklık ${climate.anomaly.tmean > 0 ? '+' : ''}${climate.anomaly.tmean} °C, yağış ${climate.anomaly.precipMm > 0 ? '+' : ''}${climate.anomaly.precipMm} mm, sıcak gün ${climate.anomaly.hotDays > 0 ? '+' : ''}${climate.anomaly.hotDays}`);
+    console.log(`Uygunluk ortalamaları: ${JSON.stringify(summary.suitabilityMean)} · dönüşüm adayı ${summary.conversionCandidates}`);
+    console.log(`İklim: ${climate.yearly.length} tam yıl, ${climate.baselineYears[0]}–${climate.baselineYears.at(-1)} → ${climate.recentYears[0]}–${climate.recentYears.at(-1)}: sıcaklık ${climate.anomaly.tmean > 0 ? '+' : ''}${climate.anomaly.tmean} °C, yağış ${climate.anomaly.precipMm > 0 ? '+' : ''}${climate.anomaly.precipMm} mm; Erinç ${climate.indices.erinc.value} (${climate.indices.erinc.class}), De Martonne ${climate.indices.deMartonne.value} (${climate.indices.deMartonne.class}), ${climate.indices.koppen.code}`);
     console.log(`Çıktı: ${join(outDir, 'evaluation.json')}`);
 }
 

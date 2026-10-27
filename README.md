@@ -262,30 +262,45 @@ artefaktı olabilir; saha teyidi gerekir.
 ## Arazi değerlendirme (Toprak Koruma ve Arazi Kullanımı, ayrı modül)
 
 ```bash
-npm run evaluate-land -- --province Trabzon --district Of --neighborhood Çataldere [--from 2016] [--refetch]
+npm run evaluate-land -- --province Trabzon --district Of --neighborhood Çataldere [--from 1991] [--refetch]
 ```
 
-Her TKGM parseli için masa başı ön değerlendirme; çıktı `land/evaluation.json`, site paketinde `land` bloğu:
+Her TKGM parseli için masa başı ön değerlendirme; çıktı `land/evaluation.json`, site paketinde `land` bloğu. Her eşik,
+kural ve resmî rakam `src/land/sources.ts` kayıt defterindeki bir kaynağa (mevzuat, bakanlık/kurum raporu, resmî
+istatistik, MGM, coğrafi işaret tescili, akademik yayın, veri seti) bağlıdır ve sitede "Kaynaklar ve kurallar"
+görünümünde linkiyle listelenir:
 
 - **Topografya**: Copernicus DEM GLO-30 (TanDEM-X radar) — eğim (ort./en dik, %), bakı, yükselti, TPI (vadi/yamaç/sırt);
   MERIT Hydro — dere kotu üstü yükseklik (HAND), havza alanı, en yakın dereye uzaklık; JRC yüzey suyu.
 - **Toprak**: OpenLandMap 250 m, 0–30 cm — kil/kum/silt, bünye sınıfı, pH, organik karbon, hacim ağırlığı.
 - **Kullanım**: Dynamic World 10 m, her yıl Mayıs–Eylül mod etiketi (2017→) + çay maskesi ⇒ uydu kullanımı; tapu
   niteliğiyle karşılaştırma (`tea_title_no_tea`, `abandoned_to_trees`, `agri_to_built`, `forest_cleared`, …) ve
-  yıllık değişim; ESA WorldCover 2021.
-- **Erozyon**: RUSLE tipi indeks A = R·K·LS·C (R yıllık yağıştan, K bünyeden, LS eğimden, C örtüden), t/ha/yıl sınıfları.
-- **Kabiliyet**: AKK I–VIII yaklaşımı (eğim, taşkın riski, erozyon, bünye) ve 5403 sınıf önerisi
-  (mutlak / özel ürün / dikili / marjinal / tarım dışı); dikili ürün altındaki eğimli arazi dikili tarımdır.
-- **Ürün uygunluğu**: çay, fındık, kivi, kestane, yaban mersini, mera, sebze/sera, ağaçlandırma — 0–100, en düşük
-  faktör belirler (yükselti, eğim, pH, yağış, don günü, en düşük sıcaklık, taşkın, erozyon); sınırlayıcı faktör yazılır.
-- **İklim**: ERA5-Land günlük (sıcaklık, çiy noktası → nem) + CHIRPS (yağış), 2016'dan bugüne, mahalle sınırı ortalaması;
-  sıcaklıklar 11 km hücrenin yükseltisinden tarım alanının (çaylı parsellerin ortanca) yükseltisine 6,5 °C/km ile düzeltilir.
-  Aylık/yıllık tablolar, klimatoloji, ilk 5 yıl ↔ son 5 yıl anomalileri, on yıllık eğilimler ve ürün takvimi pencereleri
-  (kestane çiçeklenmesi/bal, çay sürgün, fındık çiçeklenmesi, ilkbahar geç donu). Parsel uygunluğu için seri parsel
-  yükseltisine kaydırılır.
+  yıllık değişim; ESA WorldCover 2021. **Eski ↔ yeni**: Landsat 5/7/8/9 yaz NDVI medyanı beş dönemde (1986–90,
+  1996–2000, 2006–10, 2016–20, 2022–26) parsel ve mahalle için (`raw-ndvi.json`).
+- **Erozyon**: RUSLE A = R·K·LS·C; R = 38,5 + 0,35·P (Trabzon Çatak/Fol havza çalışmalarının ölçeği), K bünye/organik
+  karbondan, LS Renard (1997), C örtüden (çay 0,03); Su Erozyonu Atlası sınıfları.
+- **Kabiliyet**: AKK I–VIII (eğim sınıfları A–F, w/e/s sınırlamaları; USDA + Teknik Talimat) ve 5403 sınıf önerisi
+  04.04.2026 tarihli Arazi Kullanım Planlaması Uygulama Yönetmeliği'ne göre: I–IV mutlak, V ıslah (mutlak), VI–VII
+  entansif/korumalı tekniklerle özel ürün (çay/fındık) → özel ürün, VIII tarım dışı; gerekçe metni parselde.
+- **Ürün uygunluğu** (`src/land/rules.ts`): çay, fındık, kivi, kestane, yaban mersini, mera, sebze/sera, ağaçlandırma
+  — her faktör [lo0, lo1, hi1, hi0] bandıyla 0–100, ürün puanı en düşük faktör (Liebig); faktör eşikleri AÜ ders notları,
+  TAGEM Alata kivi broşürü (2022), KTAE maviyemiş sunumu (2025), Rize Çayı / Akçakoca Fındığı / Düzce Kestane Balı
+  coğrafi işaret tescilleri, EUFORGEN'den; yasal şartlar (2844 sayılı Kanun fındık dikim alanı: ≤750 m ve eğim ≥%12; çay
+  ruhsatı) ve Tarım Havzaları ilçe destek listesi (`DISTRICT_FACTS`, Of: mısır, yem bitkileri, fındık, yaş çay) parsel
+  sonucuna işlenir.
+- **İklim**: ERA5-Land günlük (sıcaklık, çiy noktası → nem) + CHIRPS, 1991'den bugüne, 6'şar yıllık EE çağrılarıyla
+  `land/climate/climate-<yıl>.json` önbelleği; sıcaklık 11 km hücreden tarım alanı yükseltisine 6,5 °C/km lapse ile
+  düzeltilir, ardından en yakın MGM il istasyonlarının (Rize, Trabzon, Giresun; Artvin yalnız karşılaştırma) uzun yıllık
+  normalleri ters uzaklık ağırlığıyla aynı yükseltiye taşınıp aylık sıcaklık farkı ve yağış oranı olarak seriye uygulanır
+  (`anchor` bloğu: istasyon ağırlıkları, normal ↔ model tablosu). 1991–2020 normali ↔ 2021+ anomalileri, on yıllık
+  dönemler, eğilimler, Erinç / De Martonne / Köppen indisleri (MGM 1991–2020 sınıflarıyla yan yana), don takvimi
+  (son ilkbahar / ilk sonbahar donu, donsuz gün, 7,2 °C altı soğuklama saati) ve ürün takvimi pencereleri (kestane
+  çiçeklenmesi/bal, çay sürgün, fındık çiçeklenmesi ve meyve dolumu nemi, ilkbahar geç donu). Parsel uygunluğu için seri
+  parsel yükseltisine kaydırılır (parsel iklimi bloğu).
 
 Sınırlar: toprak derinliği, taşlılık ve drenaj saha etüdü ister; sınıflar resmî arazi sınıflaması değil, denetim ve
-planlama için önceliklendirmedir. CHIRPS kıyı yağışını düşük tahmin edebilir.
+planlama için önceliklendirmedir. Kaynak kayıtlarındaki `caveat` alanı ikincil kaynaktan alınan eşikleri işaretler
+(örn. 2844 sayılı Kanun eşikleri); MGM ilçe istasyonları (Of, Pazar, Hopa) eklendiğinde `STATIONS` genişletilir.
 
 ## Dijital ruhsat kaydı (DEMO, müstahsil bazlı)
 
