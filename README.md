@@ -259,6 +259,34 @@ npm run scan-health -- --province Trabzon --district Of --neighborhood Çatalder
 tahmin kotanın altında, toplam tahmin ~155 t. Aynı tarihte kümelenen anomaliler (ör. 5–10 Tem) görüntü
 artefaktı olabilir; saha teyidi gerekir.
 
+## Arazi değerlendirme (Toprak Koruma ve Arazi Kullanımı, ayrı modül)
+
+```bash
+npm run evaluate-land -- --province Trabzon --district Of --neighborhood Çataldere [--from 2016] [--refetch]
+```
+
+Her TKGM parseli için masa başı ön değerlendirme; çıktı `land/evaluation.json`, site paketinde `land` bloğu:
+
+- **Topografya**: Copernicus DEM GLO-30 (TanDEM-X radar) — eğim (ort./en dik, %), bakı, yükselti, TPI (vadi/yamaç/sırt);
+  MERIT Hydro — dere kotu üstü yükseklik (HAND), havza alanı, en yakın dereye uzaklık; JRC yüzey suyu.
+- **Toprak**: OpenLandMap 250 m, 0–30 cm — kil/kum/silt, bünye sınıfı, pH, organik karbon, hacim ağırlığı.
+- **Kullanım**: Dynamic World 10 m, her yıl Mayıs–Eylül mod etiketi (2017→) + çay maskesi ⇒ uydu kullanımı; tapu
+  niteliğiyle karşılaştırma (`tea_title_no_tea`, `abandoned_to_trees`, `agri_to_built`, `forest_cleared`, …) ve
+  yıllık değişim; ESA WorldCover 2021.
+- **Erozyon**: RUSLE tipi indeks A = R·K·LS·C (R yıllık yağıştan, K bünyeden, LS eğimden, C örtüden), t/ha/yıl sınıfları.
+- **Kabiliyet**: AKK I–VIII yaklaşımı (eğim, taşkın riski, erozyon, bünye) ve 5403 sınıf önerisi
+  (mutlak / özel ürün / dikili / marjinal / tarım dışı); dikili ürün altındaki eğimli arazi dikili tarımdır.
+- **Ürün uygunluğu**: çay, fındık, kivi, kestane, yaban mersini, mera, sebze/sera, ağaçlandırma — 0–100, en düşük
+  faktör belirler (yükselti, eğim, pH, yağış, don günü, en düşük sıcaklık, taşkın, erozyon); sınırlayıcı faktör yazılır.
+- **İklim**: ERA5-Land günlük (sıcaklık, çiy noktası → nem) + CHIRPS (yağış), 2016'dan bugüne, mahalle sınırı ortalaması;
+  sıcaklıklar 11 km hücrenin yükseltisinden tarım alanının (çaylı parsellerin ortanca) yükseltisine 6,5 °C/km ile düzeltilir.
+  Aylık/yıllık tablolar, klimatoloji, ilk 5 yıl ↔ son 5 yıl anomalileri, on yıllık eğilimler ve ürün takvimi pencereleri
+  (kestane çiçeklenmesi/bal, çay sürgün, fındık çiçeklenmesi, ilkbahar geç donu). Parsel uygunluğu için seri parsel
+  yükseltisine kaydırılır.
+
+Sınırlar: toprak derinliği, taşlılık ve drenaj saha etüdü ister; sınıflar resmî arazi sınıflaması değil, denetim ve
+planlama için önceliklendirmedir. CHIRPS kıyı yağışını düşük tahmin edebilir.
+
 ## Dijital ruhsat kaydı (DEMO, müstahsil bazlı)
 
 ```bash

@@ -12,6 +12,7 @@ import { loadProducersForBundle } from '../producers/bundle.ts';
 import { loadRadarForBundle } from '../radar/bundle.ts';
 import { loadFusionForBundle } from '../fusion/bundle.ts';
 import { loadHealthForBundle } from '../health/bundle.ts';
+import { loadLandForBundle } from '../land/bundle.ts';
 
 /**
  * Packs one neighborhood's inventory into a single JSON bundle for the cayhesabim site
@@ -183,6 +184,8 @@ function main(): void {
         fusion: loadFusionForBundle(store.dir),
         // Optional: growing-season health, anomaly and yield estimates (garden-health module).
         health: loadHealthForBundle(store.dir),
+        // Optional: land evaluation (Toprak Koruma ve Arazi Değerlendirme module).
+        land: loadLandForBundle(store.dir),
         licensing: {
             demo: true,
             generatedAt: registry.generatedAt,

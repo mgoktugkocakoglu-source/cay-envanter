@@ -12,18 +12,18 @@ Kullanım:
 
 Bir ya da daha çok mahalle için zincirin tamamını sırayla koşturur:
   harvest → detect-tea → detect-pruning → imagery → scan-producers (sezon sezon) → build-licensing
-  → detect-pruning-radar → fuse-pruning → scan-health → export-site
+  → detect-pruning-radar → fuse-pruning → scan-health → evaluate-land → export-site
 Çıktısı girdisinden yeni olan adımlar atlanır (--force ile yeniden koşar); harvest kaldığı yerden devam eder ve
 TKGM günlük kotası dolunca zincir eldeki parsellerle sürer. Her gün aynı komut: kütüphane büyüdükçe yeniden tarar.
-Adım adları: harvest, detect-tea, detect-pruning, imagery, scan-producers, build-licensing, radar, fuse, health, export-site
+Adım adları: harvest, detect-tea, detect-pruning, imagery, scan-producers, build-licensing, radar, fuse, health, land, export-site
 `;
 
 const RETRY_DELAY_S = 60;
 /** No stage legitimately runs this long (worst observed: 17 min); a hung Earth Engine socket is killed and retried. */
 const STAGE_TIMEOUT_MS = 60 * 60 * 1000;
 
-type StageName = 'harvest' | 'detect-tea' | 'detect-pruning' | 'imagery' | 'scan-producers' | 'build-licensing' | 'radar' | 'fuse' | 'health' | 'export-site';
-const STAGE_ORDER: StageName[] = ['harvest', 'detect-tea', 'detect-pruning', 'imagery', 'scan-producers', 'build-licensing', 'radar', 'fuse', 'health', 'export-site'];
+type StageName = 'harvest' | 'detect-tea' | 'detect-pruning' | 'imagery' | 'scan-producers' | 'build-licensing' | 'radar' | 'fuse' | 'health' | 'land' | 'export-site';
+const STAGE_ORDER: StageName[] = ['harvest', 'detect-tea', 'detect-pruning', 'imagery', 'scan-producers', 'build-licensing', 'radar', 'fuse', 'health', 'land', 'export-site'];
 
 interface Step {
     stage: StageName;
@@ -151,6 +151,13 @@ function buildSteps(store: NeighborhoodStore, base: string[], opts: { seasons: n
         output: d('health', `season-${opts.healthYear}.json`),
         inputs: [registry, teaPatches],
         run: () => runNode('scan-health', [...base, '--year', String(opts.healthYear)]),
+    });
+    steps.push({
+        stage: 'land',
+        label: 'Arazi değerlendirme',
+        output: d('land', 'evaluation.json'),
+        inputs: [teaParcels],
+        run: () => runNode('evaluate-land', base),
     });
     steps.push({ stage: 'export-site', label: 'Site paketi', output: null, inputs: [], run: () => runNode('export-site', base) });
     return steps;
