@@ -67,11 +67,11 @@ const DEM_SCALE_M = 30;
 const SOIL_SCALE_M = 100;
 const STREAM_MIN_KM2 = 5;
 
-function collection(ee: EE, parcels: ParcelInput[]): EE {
+export function collection(ee: EE, parcels: ParcelInput[]): EE {
     return ee.FeatureCollection(parcels.map((p) => ee.Feature(ee.Geometry(p.geometry), { key: p.key })));
 }
 
-function num(v: unknown): number | null {
+export function num(v: unknown): number | null {
     return typeof v === 'number' && Number.isFinite(v) ? v : null;
 }
 
@@ -226,7 +226,7 @@ export interface NdviHistoryRaw {
 export const NDVI_PERIODS: Array<[number, number]> = [[1986, 1990], [1996, 2000], [2006, 2010], [2016, 2020], [2022, 2026]];
 const DENSE_NDVI = 0.6;
 
-function landsatNdvi(ee: EE, region: EE, from: number, to: number): EE {
+export function landsatNdvi(ee: EE, region: EE, from: number, to: number): EE {
     const mask = (img: EE) => {
         const qa = img.select('QA_PIXEL');
         // Bits 3 (cloud), 4 (cloud shadow), 5 (snow) and 1 (dilated cloud) clear.

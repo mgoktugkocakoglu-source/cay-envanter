@@ -22,7 +22,8 @@
         "scan-health": "node src/cli/scan-health.ts",
         "pipeline": "node src/cli/pipeline.ts",
         "neighborhoods": "node src/cli/list-neighborhoods.ts",
-        "evaluate-land": "node src/cli/evaluate-land.ts"
+        "evaluate-land": "node src/cli/evaluate-land.ts",
+        "garden-age": "node src/cli/scan-garden-age.ts"
     },
     "dependencies": {
         "@google/earthengine": "^1.7.47",

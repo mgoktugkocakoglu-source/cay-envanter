@@ -22,8 +22,8 @@ const RETRY_DELAY_S = 60;
 /** No stage legitimately runs this long (worst observed: 17 min); a hung Earth Engine socket is killed and retried. */
 const STAGE_TIMEOUT_MS = 60 * 60 * 1000;
 
-type StageName = 'harvest' | 'detect-tea' | 'detect-pruning' | 'imagery' | 'scan-producers' | 'build-licensing' | 'radar' | 'fuse' | 'health' | 'land' | 'export-site';
-const STAGE_ORDER: StageName[] = ['harvest', 'detect-tea', 'detect-pruning', 'imagery', 'scan-producers', 'build-licensing', 'radar', 'fuse', 'health', 'land', 'export-site'];
+type StageName = 'harvest' | 'detect-tea' | 'detect-pruning' | 'imagery' | 'scan-producers' | 'build-licensing' | 'radar' | 'fuse' | 'health' | 'land' | 'age' | 'export-site';
+const STAGE_ORDER: StageName[] = ['harvest', 'detect-tea', 'detect-pruning', 'imagery', 'scan-producers', 'build-licensing', 'radar', 'fuse', 'health', 'land', 'age', 'export-site'];
 
 interface Step {
     stage: StageName;
@@ -158,6 +158,13 @@ function buildSteps(store: NeighborhoodStore, base: string[], opts: { seasons: n
         output: d('land', 'evaluation.json'),
         inputs: [teaParcels],
         run: () => runNode('evaluate-land', base),
+    });
+    steps.push({
+        stage: 'age',
+        label: 'Bahçe yaşı ve yenileme',
+        output: d('age', 'evaluation.json'),
+        inputs: [teaParcels],
+        run: () => runNode('garden-age', base),
     });
     steps.push({ stage: 'export-site', label: 'Site paketi', output: null, inputs: [], run: () => runNode('export-site', base) });
     return steps;

@@ -13,6 +13,7 @@ import { loadRadarForBundle } from '../radar/bundle.ts';
 import { loadFusionForBundle } from '../fusion/bundle.ts';
 import { loadHealthForBundle } from '../health/bundle.ts';
 import { loadLandForBundle } from '../land/bundle.ts';
+import { loadAgeForBundle } from '../age/bundle.ts';
 
 /**
  * Packs one neighborhood's inventory into a single JSON bundle for the cayhesabim site
@@ -186,6 +187,8 @@ function main(): void {
         health: loadHealthForBundle(store.dir),
         // Optional: land evaluation (Toprak Koruma ve Arazi Değerlendirme module).
         land: loadLandForBundle(store.dir),
+        // Optional: garden age, renewal and abandonment (Landsat 1984→ + Sentinel-2 activity).
+        age: loadAgeForBundle(store.dir),
         licensing: {
             demo: true,
             generatedAt: registry.generatedAt,
@@ -211,6 +214,7 @@ function main(): void {
     console.log(`Radar teyidi: ${bundle.radar ? bundle.radar.seasons.map((s) => `${s.season} (${s.records.length} kayıt)`).join(', ') : 'yok'}`);
     console.log(`Çok-sensör karar: ${bundle.fusion ? bundle.fusion.seasons.map((s) => `${s.season} (${s.gardens.length} bahçe)`).join(', ') : 'yok'}`);
     console.log(`Bahçe sağlığı: ${bundle.health ? bundle.health.seasons.map((s) => `${s.season} (${s.gardens.length} bahçe)`).join(', ') : 'yok'}`);
+    console.log(`Arazi değerlendirme: ${bundle.land ? `${bundle.land.parcels.length} parsel` : 'yok'} · bahçe yaşı: ${bundle.age ? `${bundle.age.parcels.length} parsel` : 'yok'}`);
     console.log(`Paket: ${outPath}`);
 
     const imagery = loadSeasonImagery(store.dir);

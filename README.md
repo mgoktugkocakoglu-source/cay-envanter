@@ -302,6 +302,37 @@ Sınırlar: toprak derinliği, taşlılık ve drenaj saha etüdü ister; sınıf
 planlama için önceliklendirmedir. Kaynak kayıtlarındaki `caveat` alanı ikincil kaynaktan alınan eşikleri işaretler
 (örn. 2844 sayılı Kanun eşikleri); MGM ilçe istasyonları (Of, Pazar, Hopa) eklendiğinde `STATIONS` genişletilir.
 
+## Bahçe yaşı ve yenileme (ayrı modül)
+
+```bash
+npm run garden-age -- --province Trabzon --district Of --neighborhood Çataldere [--from 1984] [--refetch]
+```
+
+Çaylı parseller (uydu çay payı ≥ 0,2 ya da tapuda çay) için `age/evaluation.json`, site paketinde `age` bloğu
+(`src/age/`):
+
+- **Kuruluş yılı (Landsat 1984→)**: her yıl Haziran–Eylül NDVI medyanı (`raw-landsat.json`, 6 yıllık EE çağrıları), 3 yıllık
+  ortanca ile düzleştirilir. Kapalı örtünün (NDVI ≥ 0,55) üç yıl üst üste başladığı ve önceki dört yılda düşük faz (< 0,40)
+  görülen yıl tesis yılıdır; kayıt başında zaten kapalı örtü "1986 öncesi" (yaş ≥ 40) sınıfıdır. Of'ta bahçelerin neredeyse
+  tamamı bu sınıftadır (ÇAYKUR: bahçeler 60–100 yaşında, verim ömrü 50 yıl); modülün ayırt edici gücü 1986 sonrası tesislerde,
+  gençleştirme izlerinde ve canlılıkta ortaya çıkar.
+- **Gençleştirme izi**: düzleştirilmiş seride ≥ 0,08 düşüş ve dört yazda toparlanma (tüm parselin kök/gençleştirme budaması ya
+  da sökme-yenileme; ÇAYKUR'un yılda yedide bir budaması eşiğin altında kalır).
+- **Canlılık**: son 12 yılın eğilimi (NDVI / 10 yıl), son 5 yıl ortalaması, en iyi 5 yıllık döneme göre düşüş yüzdesi ve
+  mahalle ortancasına göre konum (iki geçişli hesap).
+- **Hasat etkinliği (Sentinel-2 2017→)**: Nisan–Ekim aylık NDVI medyanı (`raw-s2.json`, Cloud Score+ maskesi); bir aydan diğerine
+  ≥ 0,05 düşüş ve ertesi ay ≥ 0,03 toparlanma hasat/budama düşüşü sayılır; düşüş sayısı ve sezon genliği ile hasat ediliyor /
+  seyrek / iz yok sınıfı.
+- **Terk belirtisi**: hasat izi yok + düşük çay payı + çok düşük genlik + düz ve çok yüksek NDVI → aktif / zayıf işletme / terk
+  edilmiş olabilir.
+- **Yenileme önceliği (0–100)**: 40 yaş üstü 30, 25–40 yaş 15, kayıtta gençleştirme yok ya da 14 yıldan eski 15, canlılık düşüyor
+  20, zirveye göre ≥ %8 düşük 20, mahalle ortancasının altında 15, aktif hasat 10; ≥ 65 yüksek, ≥ 40 orta. Terk edilmiş
+  olabilecekler ayrı listelenir (kapsam dışı).
+
+Site: `GET areas/:id/age/{summary,parcels,parcels/:id,layers}` ve "Bahçe Yaşı" sekmesi (özet, parsel listesi, harita, parsel
+panelinde 1984→ NDVI grafiği, aylık Sentinel-2 küçük grafikleri, gerekçeler). Tesis yılı bir tahmindir; ruhsat tarihi ve saha
+bilgisiyle doğrulanmalıdır.
+
 ## Dijital ruhsat kaydı (DEMO, müstahsil bazlı)
 
 ```bash
