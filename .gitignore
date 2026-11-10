@@ -8,3 +8,6 @@ secrets/
 
 # local demo video renders
 docs/demo/
+
+# Python bytecode caches (py/ helper scripts)
+__pycache__/

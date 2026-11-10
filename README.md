@@ -183,32 +183,58 @@ başına sınıflanır (bilgi taşımayan kanal bilgi taşıyanı sulandırması
 nötr); 6 günlük kış çiftlerinde hava kaynaklı dekorelasyon baskın. Denenecekler: 10×3 pencere, yalnız 12
 günlük çiftler, saha etiketleriyle kalibrasyon.
 
-## Çok-sensör budama kararı (füzyon modülü)
+## Çok-sensör budama kararı (füzyon modülü, v2.1)
 
 ```bash
-# Bahçe + optik değişim yaması birimleri; S2 NDVI/NBR + S1 VH (2 yörünge) + koherans; 2 günde bir tarama taklidi
-npm run fuse-pruning -- --province Trabzon --district Of --neighborhood Çataldere --season 2025 --every 2 [--refetch]
-node scripts/fusion-synthetic.ts     # sentetik doğrulama: derin / hafif / geçici / yalnız optik / değişimsiz / bulutlu
+# Bahçe + optik değişim yaması birimleri; S2 + Landsat 8/9 NDVI/NBR/NDRE/NDII, S1 γ0 VH + VH/VV (2 yörünge),
+# koherans (HyP3 burst InSAR ya da SNAP); Eylül → 15 Temmuz serisi, 2 günde bir tarama taklidi
+npm run fuse-pruning -- --province Trabzon --district Of --neighborhood Çataldere --season 2025 --every 2 [--ratio 7] [--no-baseline] [--refetch]
+node scripts/fusion-synthetic.ts     # 15 sentetik senaryo (derin/hafif/geçici/kar/yalnız optik/bulut boşluğu/çelişki/kademeli/yaz toparlanma…)
+# Koherans (ücretsiz ASF HyP3, ayda 8 000 kredi; 1 çift = 1 kredi): önce py/s1_bursts.py ile burst listesi, sonra
+.venv/Scripts/python py/hyp3_coherence.py --dir data/library/trabzon/of/cataldere --season 2025 [--no-wait] [--dry-run]
+#   → pruning-radar/coherence-hyp3-<sezon>.json (fuse-pruning bunu SNAP dosyasına tercih eder)
 ```
 
 `pruning-fusion/season-<yyyy-yy>.json` — "denklem" (`src/fusion/model.ts`):
-1. Her kanal komşuluğa göreli (tarih medyanı çıkarılır): hava, mevsim, kar herkesi birlikte oynatır.
-2. Aday değişim tarihi t₀ (Eki 15–Oca 31, Şub 15–Nis 10) için kanal basamağı δ = işaret·(sonra − önce),
-   z = δ / (σ·√(1/n_önce + 1/n_sonra)); σ bahçenin kendi sağlam gürültüsü (ardışık farkların MAD'ı).
-3. Büyüklük kapısı (derin budama): NDVI/NBR ≥ 0,12, VH ≥ 1 dB, koherans ≥ 0,06.
-4. Kalıcılık: t₀+25 gün sonrası ve son iki gözlem erken basamağın ≥ %50'sini korumalı; z bununla çarpılır
-   (gölge/kar/don geri döner, budama dönmez). Erken gözlem basamağı göstermiyorsa t₀ erken → kalıcılık 0.
-5. Optik kanallar ortalanır (korelasyonlu), yörüngeler ve sensörler Stouffer ile birleşir (ağırlık optik 1,
-   radar 0,9, koherans 0,2). En iyi t₀ seçilir; ~50 aday tarih gürültüyü |z|≈2,3'e şişirdiği için eşikler
-   olası 2,8 / kesin 3,5.
-6. **Budandı** = optik VE radar aynı t₀'da büyüklük + kalıcılık şartlarını sağlıyor, birleşik z ≥ 3,5;
-   **olası** = tek birincil sensör; **belirsiz** = zayıf ya da geri dönen; **budama yok** = ≥ 12 gözlemle hiçbir sinyal.
-7. Tarama taklidi: her 2 günde bir yalnız o güne kadarki gözlemlerle karar; ilk "olası" ve ilk "kesin" tarihleri.
-   Müstahsil: kesin budanan birim alanı (yama ise yama) ruhsat alanının 1/7'siyle karşılaştırılır.
+1. **Tarih eleme.** Bahçelerin ham NDVI ortancası 0,65'in altına düşen optik günler (kar, don, alçak kış güneşinin
+   gölgesi — mahallenin en fazla 1/7'si budanır, ortanca budamayla çökmez) ve sensörünün görebildiği bahçelerin
+   %25'inden azını kapsayan günler herkes için dışlanır (`dateQuality`; dışlananlar çıktıda listelenir).
+2. Her kanal komşuluğa göreli (tarih medyanı çıkarılır): hava, mevsim, kar herkesi birlikte oynatır. Landsat yalnız
+   ≥ 1 200 m² birimlerde kullanılır (30 m piksel); S1 σ0 → arazi-düzleştirilmiş γ0 (hacim modeli, Copernicus DEM).
+3. Aday değişim tarihi t₀ (1 Eki – 20 Nis, sürekli) için kanal basamağı δ = işaret·(sonra − önce), önce 75 / sonra 75 gün,
+   z = δ / (σ·√(1/n_önce + 1/n_sonra)); σ bahçenin kendi sağlam gürültüsü (ardışık farkların MAD'ı, önceki kış ile
+   tabanlanır). ÇAYKUR takvimi (15 Eki – 31 Oca, 15 Şub – 10 Nis) karara değil `inCalendar` bayrağına girer.
+4. Büyüklük kapısı (derin budama): NDVI/NBR ≥ 0,12, NDRE ≥ 0,08, NDII ≥ 0,10, VH ≥ 1 dB, VH/VV ≥ 0,8 dB, koherans ≥ 0,06.
+   **Çapraz indeks:** NDVI ile bir SWIR indeksi (NBR/NDII) birlikte düşmeli (kar NDVI'yi düşürür, NBR'yi yükseltir).
+5. Kalıcılık: t₀+25 gün sonrası ve son iki gözlem erken basamağın ≥ %50'sini (gölgeye yatkın bahçede %70) korumalı; z bununla çarpılır.
+6. Optik kanallar ortalanır (korelasyonlu), yörüngeler ve sensörler Stouffer ile birleşir (ağırlık optik 1, radar 0,9,
+   koherans 0,5). En iyi t₀ seçilir; eşikler olası 2,8 / kesin 3,5 (gölgeye yatkın bahçede +0,5).
+7. **Fiziksel korumalar (v2.1):** (a) bahçenin **ham** NDVI'si de ≥ 0,08 düşmeli — komşular yeşillenirken yerinde sayan
+   bahçe göreli düşer ama budanmamıştır; (b) **basamak/eğim ayrımı** — sezon boyu süren kademeli düşüş (çizgi, basamağı
+   ≤ 1,15 kat artıkla açıklıyorsa ya da t₀ öncesi zaten ≥ 0,12 kaymışsa) terk/sökme/hastalıktır, budama değil → belirsiz +
+   incelensin; (c) **yaz toparlanma testi** — 20 May – 15 Tem göreli NDVI'si Eylül–Ekim'e göre ≥ 0,06 (z ≥ 2) aşağıda
+   olmalı, yoksa kış adımı hafif budama/üst alma ya da kar hasarıydı → belirsiz (derin budama değil); yaz teyidi varsa
+   kar (SWIR) ve bulut boşluğu kuralları aranmaz; (d) **toplum kalibrasyonu** — bahçe birimi optik z'lerinin sağlam
+   ortanca/IQR dağılımı ampirik sıfır hipotezidir (en fazla 1/7 budandığı için kütle budanmamışlardır): "budandı" ≥ 1,5 σ,
+   "olası" ≥ 0,5 σ ayrışmalı; kütlenin içindeki zayıf sinyaller "budama yok" olur.
+8. **Budandı** = optik tek başına yeter: her iki yanda ≥ 3 ve ≥ 2 geç gözlem, çapraz indeks, kalıcılık, optik z ≥ 3,5 ve
+   t₀ çevresindeki temiz optik boşluk ≤ 20 gün; boşluk daha uzunsa radar (geri saçılım ya da koherans) aynı fikirde olmalı;
+   ya da optik + radar birlikte birleşik z ≥ 3,5. Radar yalnız anlamlı YÜKSELİŞLE veto eder (→ belirsiz, eksper).
+   **Olası** = güçlü ama eksik (gözlem, kalıcılık, boşluk, seviye, toparlanma, toplum); **belirsiz** = zayıf, geri dönen,
+   kademeli ya da çelişen; **budama yok** = ≥ 12 gözlemle hiçbir sinyal. Yalnız-radar olası için geri saçılım z ≥ 4.
+9. Tarama taklidi: 15 Eki → 15 Tem her 2 günde bir yalnız o güne kadarki gözlemlerle karar; ilk "olası" ve ilk "kesin"
+   tarihleri raporlanır (sezon kararı yazı görerek verilir). Müstahsil: kesin/olası birim alanı (yama ise yama, döngüde
+   daha önce budanan zemin düşülerek) ruhsat alanının 1/`--ratio`'suyla karşılaştırılır (ÇAYKUR 1/5 → 1/7 → 1/10; parametre).
 
-Çataldere 2025-26 (kalibre edilmedi): 344 bahçede 4 kesin, 69 olası (43 yalnız optik, 26 yalnız radar),
-173 belirsiz, 98 budama yok; müstahsil: 3 tam, 42 kısmen, 47 belirsiz, 8 görülmedi, 36 ruhsatsız.
-Sonraki kaldıraçlar: saha etiketleriyle eşik kalibrasyonu, 50 cm optik, S1'de 3×3 çoklu bakış.
+Çataldere 2025-26 (v2.1, kalibre edilmedi; 145 optik tarih — 75 S2, 35 L8, 35 L9 — 74'ü elendi [4 kar/gölge çöküşü, 70 seyrek
+kapsama]; S1 γ0 58 + 54 tarih; HyP3 koherans 70 + 32 çift): 344 bahçede **9 kesin** (hepsi yaz testi ✓, ham NDVI düşüşü
+0,12–0,36, toplum z ≥ 1,7), 6 olası (eksper), 107 belirsiz (43 yazın toparlanan kış adımı = hafif budama/kar hasarı, 56 zayıf
+sinyal, 3 kademeli kayıp, 3 geçici, 1 küçük NDVI, 1 seviye), 222 budama yok (115'i toplum kalibrasyonuyla). Müstahsil: 7 tam,
+6 kısmen, 7 belirsiz, 109 görülmedi, 7 ruhsatsız; alım kararı 5 otomatik açık, 13 bekliyor, 109 budama yok, 3 eksper.
+v2 aynı sezonda 6 kesin / 58 olası / 143 belirsiz / 137 yok veriyordu: belirsizlik yarıdan aza indi, "kesin" sınıfı dört
+fiziksel kontrolü de geçen bahçelere daraldı, eksper kuyruğu 87'den 14'e düştü.
+Sonraki kaldıraçlar: saha etiketleriyle eşik kalibrasyonu (`calibrate-fusion`), HyP3 koheransının tüm mahallelere
+yayılması, 50 cm optik örneklem (satın alma askıda).
 
 **Parselsiz çaylıklar:** TKGM hasadı günlük kotayla büyüdüğü için (Çataldere %56) parsel dışında kalan
 çay yamaları (≥ 300 m²) `unassigned` birimler olarak aynı modelle yargılanır; parsel/ruhsat gelince

@@ -161,6 +161,38 @@ KVKK: kişi verisi yerine ruhsat/parsel anahtarı yeterli.
 Satın alma kararı (Planet 3 m, Pléiades 30 cm, ticari AMS) askıda: yukarıdaki açık yöntemler tüketilmeden
 gerek yok; VHR yalnız "incelensin" kuyruğundaki az sayıda bahçe için anlamlı olur.
 
+## 8. Uygulama durumu — füzyon v2.1 (10 Kasım 2026)
+
+Bölüm 7'deki planın ilk üç adımı koda indi (`src/fusion/model.ts`, `src/cli/fuse-pruning.ts`, `py/hyp3_coherence.py`):
+
+- **Gözlem yoğunluğu:** Sentinel-2 + Landsat 8/9 (≥ 1 200 m² birimlerde) tek seride; Çataldere 2025-26 için
+  1 Eyl → 12 Tem arası 145 optik tarih (75 S2, 35 L8, 35 L9). Seri Temmuz ortasına kadar çekilir: yaz başı gözlemi
+  kış adımının derin budama mı hafif budama mı olduğunu söyler.
+- **Tarih eleme:** mahalle ortanca NDVI'si < 0,65 olan günler (Ocak 2026 kar günleri: ortanca 0,46 ve 0,38) ve
+  sensörünün görebildiği bahçelerin < %25'ini kapsayan günler herkes için dışlanır; çıktıda listelenir.
+- **Fiziksel korumalar:** ham NDVI düşüşü ≥ 0,08 (göreli düşüş tek başına yetmez), basamak/eğim ayrımı (sezon boyu
+  kademeli kayıp → terk/sökme şüphesi, budama değil), yaz toparlanma testi (20 May – 15 Tem göreli NDVI ≥ 0,06 aşağıda,
+  z ≥ 2; toparlanan kış adımı derin budama sayılmaz, yaz teyidi varsa kar ve bulut boşluğu kuralları aranmaz),
+  ÇAYKUR takvimi bayrağı.
+- **Toplum kalibrasyonu:** bahçe birimi optik z'lerinin sağlam ortanca/IQR dağılımı ampirik sıfır hipotezi olarak
+  kullanılır (en fazla 1/7 budandığı için kütle budanmamıştır); "budandı" ≥ 1,5, "olası" ≥ 0,5 sağlam σ ayrışmalı,
+  kütlenin içindeki zayıf sinyaller "budama yok" olur. Saha etiketi gelene kadar eşiklerin tek nesnel dayanağı budur.
+- **Radar:** S1 σ0 → γ0 arazi düzleştirme (hacim modeli), VH ve VH/VV; koherans ASF HyP3 burst InSAR'dan
+  (ücretsiz, 5×1 bakış 20 m, 1 çift = 1 kredi; Çataldere 2025-26 için 102 çift ≈ 102 kredi).
+- **Earth Engine dayanıklılığı:** uzun sezon serisi "memory capacity exceeded" verdiğinde parça ikiye bölünür,
+  tek tarihte tileScale artırılır; optik ve her yörünge çekildikçe önbelleğe yazılır (yarım kalan koşu kaybolmaz).
+- **Sentetik doğrulama:** 15 senaryo (derin/hafif/geçici/kar/yalnız optik/bulut boşluğu/çelişki/kademeli/ham NDVI
+  sabit/yaz toparlanma/Nisan budaması) beklenen sınıfta.
+
+**Çataldere 2025-26 sonucu (v2.1):** 344 bahçede 9 kesin (hepsi yaz testi ✓, ham NDVI düşüşü 0,12–0,36, toplum z ≥ 1,7;
+6'sı yalnız optik, 2'si radar teyitli, 1'i ortak), 6 olası, 107 belirsiz (43 yazın toparlanan kış adımı, 56 zayıf sinyal,
+3 kademeli kayıp, 3 geçici, 2 diğer), 222 budama yok. Eksper kuyruğu 14 bahçe (v2'de 87). Müstahsil: 7 tam, 6 kısmen,
+7 belirsiz, 109 görülmedi, 7 ruhsatsız. Ocak 2026'nın iki kar günü ve 55 günlük kış boşluğu en büyük gözlem engeli;
+yaz teyidi bu boşluğu kapatıyor, HyP3 koheransı yalnız bahçe birimlerinde (yamalar için henüz hesaplanmıyor).
+
+Açık kalanlar: saha etiketiyle gerçek kalibrasyon (`calibrate-fusion`), HyP3 koheransının diğer mahallelere
+yayılması, ÇAYKUR budama takvimi ve 1/7–1/10 oranının resmî teyidi (parametre), 50 cm optik örneklem (askıda).
+
 ## Kaynaklar
 
 - Schwieder vd. 2026, MODCiX, Remote Sensing of Environment 342 (S0034425726002361); GitHub geo-masc/modcix.

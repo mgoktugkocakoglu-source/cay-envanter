@@ -10,11 +10,13 @@ import { currentGeometry, type LicensingRegistry } from '../licensing/registry.t
 import { backscatterSeries, type OrbitPass, type PassSeries } from '../radar/series.ts';
 import { RADAR_RULES, radarOnlyCandidate, relativeCoherence, relativeSeries, scoreEvent, type RadarResult, type RelativeSeries } from '../radar/score.ts';
 
-/** Output of py/coherence/run.py: per-pass burst-pair coherence averaged per garden. */
+/** Output of py/coherence/run.py (SNAP, `cohWin`) or py/hyp3_coherence.py (HyP3, `looks`): per-pass pair coherence averaged per garden. */
 interface CoherenceFile {
     season: string;
-    cohWin: [number, number];
-    passes: Array<{ pass: OrbitPass; relativeOrbit: number; burstId: string; pairs: Array<[string, string]> }>;
+    source?: string;
+    cohWin?: [number, number];
+    looks?: string;
+    passes: Array<{ pass: OrbitPass; relativeOrbit: number; relativeOrbits?: number[]; burstId: string; pairs: Array<[string, string]> }>;
     gardens: Record<string, Record<string, Array<number | null>>>;
 }
 
@@ -42,7 +44,7 @@ export interface RadarSeasonFile {
     window: [string, string];
     passes: Array<{ pass: OrbitPass; relativeOrbit: number; dates: string[]; cohDates?: string[] }>;
     /** Coherence (SNAP burst pairs) when py/coherence/run.py has run for the season. */
-    coherence: { cohWin: [number, number]; pairs: Record<OrbitPass, number> } | null;
+    coherence: { cohWin: [number, number]; source?: string; pairs: Record<OrbitPass, number> } | null;
     /** Per garden: relative VH / ratio (and coherence) series per pass (for the site's sparkline). */
     series: Record<string, Array<{ pass: OrbitPass; vhRel: Array<number | null>; ratioRel: Array<number | null>; cohRel?: Array<number | null> }>>;
     records: Array<{ recordId: string; gardenId: string; radar: RadarResult }>;
@@ -94,7 +96,7 @@ async function main(): Promise<void> {
     const relative = passes.map((p) => relativeSeries(p));
 
     // Coherence channel (optional): neighbourhood-relative pair coherence joins the pass series.
-    const cohPath = join(store.dir, 'pruning-radar', `coherence-${windows.season}.json`);
+    const cohPath = [join(store.dir, 'pruning-radar', `coherence-hyp3-${windows.season}.json`), join(store.dir, 'pruning-radar', `coherence-${windows.season}.json`)].find((p) => existsSync(p)) ?? join(store.dir, 'pruning-radar', `coherence-${windows.season}.json`);
     const coherence = existsSync(cohPath) ? (JSON.parse(readFileSync(cohPath, 'utf8')) as CoherenceFile) : null;
     const cohDatesByPass = new Map<OrbitPass, string[]>();
     if (coherence) {
@@ -108,7 +110,7 @@ async function main(): Promise<void> {
                 if (target[id]) Object.assign(target[id], r);
             }
             cohDatesByPass.set(cp.pass, cp.pairs.map(([, d2]) => d2));
-            console.log(`Koherans ${cp.pass}: ${cp.pairs.length} çift (yörünge ${cp.relativeOrbit}, pencere ${coherence.cohWin.join('×')})`);
+            console.log(`Koherans ${cp.pass}: ${cp.pairs.length} çift (yörünge ${(cp.relativeOrbits ?? [cp.relativeOrbit]).join('+')}, ${coherence.cohWin ? `pencere ${coherence.cohWin.join('×')}` : `${coherence.source ?? 'hyp3'} ${coherence.looks ?? ''} bakış`})`);
         }
     } else {
         console.log('Koherans dosyası yok (py/coherence/run.py); yalnız geri saçılım kullanılıyor.');
@@ -137,7 +139,7 @@ async function main(): Promise<void> {
         window,
         passes: passes.map((p) => ({ pass: p.pass, relativeOrbit: p.relativeOrbit, dates: p.dates, cohDates: cohDatesByPass.get(p.pass) })),
         coherence: coherence
-            ? { cohWin: coherence.cohWin, pairs: Object.fromEntries(coherence.passes.map((cp) => [cp.pass, cp.pairs.length])) as Record<OrbitPass, number> }
+            ? { cohWin: coherence.cohWin ?? [5, 1], source: coherence.source ?? 'snap', pairs: Object.fromEntries(coherence.passes.map((cp) => [cp.pass, cp.pairs.length])) as Record<OrbitPass, number> }
             : null,
         series: Object.fromEntries(gardens.map((g) => [g.id, seriesOf(g.id).map((s) => ({ pass: s.pass, vhRel: s.vhRel, ratioRel: s.ratioRel, cohRel: s.cohRel }))])),
         records,

@@ -3,38 +3,48 @@ import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import type { Feature, FeatureCollection, MultiPolygon, Polygon } from 'geojson';
 import { area as turfArea, difference, feature, featureCollection, intersect, union } from '@turf/turf';
-import { initEarthEngine } from '../ee/session.ts';
+import { initEarthEngine, isCapacityError } from '../ee/session.ts';
 import { pruningWindows } from '../ee/pruning.ts';
 import { NeighborhoodStore } from '../library/store.ts';
 import { buildDemoProducers } from '../producers/demo-producers.ts';
 import { currentGeometry, type LicensingRegistry } from '../licensing/registry.ts';
 import { backscatterSeries, type OrbitPass } from '../radar/series.ts';
-import { opticalSeries } from '../fusion/optical-series.ts';
+import { opticalSeries, type OpticalSeries } from '../fusion/optical-series.ts';
 import {
+    applyDateQuality,
     CHANNEL_DEFAULTS,
+    dateQuality,
     FUSION_RULES,
     judge,
+    priorContext,
     relativeToNeighbourhood,
     scanTimeline,
     type ChannelKey,
     type ChannelSeries,
+    type DateQuality,
     type FusionClass,
     type FusionVerdict,
+    type UnitContext,
 } from '../fusion/model.ts';
 
 type Poly = Polygon | MultiPolygon;
+/* `ee` objects are untyped (see src/types/earthengine.d.ts). */
+type EE = any; // eslint-disable-line @typescript-eslint/no-explicit-any
 
 const USAGE = `
 Kullanım:
-  npm run fuse-pruning -- --province Trabzon --district Of --neighborhood Çataldere --season 2025 [--every 2]
+  npm run fuse-pruning -- --province Trabzon --district Of --neighborhood Çataldere --season 2025 [--every 2] [--ratio 7] [--no-baseline] [--refetch]
 
-Çok-sensörlü budama kararı (ayrı modül): her bahçe için Sentinel-2 NDVI/NBR, Sentinel-1 VH (iki
-yörünge) ve varsa koherans serileri komşuluğa göreli hale getirilir; aday değişim tarihlerinde
-kalıcı basamak değişimi aranır, sensörler birleştirilir. Taramalar --every günde bir taklit edilir:
-her bahçe için ilk "budandı" tarihi bulunur. Çıktı: pruning-fusion/season-<yyyy-yy>.json
+Çok-sensörlü budama kararı (ayrı modül): her bahçe için Sentinel-2 + Landsat 8/9 NDVI/NBR/NDRE/NDII,
+Sentinel-1 arazi-düzleştirilmiş VH ve VH/VV (iki yörünge) ve varsa koherans (HyP3 ya da SNAP) serileri
+komşuluğa göreli hale getirilir; aday değişim tarihlerinde kalıcı basamak değişimi aranır, sensörler
+birleştirilir. Önceki sezonun optik serisi bahçenin alışkanlık gürültüsünü ve geçici kış düşüşlerini
+(gölge/kar) verir. Taramalar --every günde bir taklit edilir. --ratio budama oranı (7 = 1/7, 10 = 1/10).
+Çıktı: pruning-fusion/season-<yyyy-yy>.json
 `;
 
 interface CoherenceFile {
+    source?: string;
     passes: Array<{ pass: OrbitPass; pairs: Array<[string, string]> }>;
     gardens: Record<string, Record<string, Array<number | null>>>;
 }
@@ -65,6 +75,8 @@ export interface FusionGarden {
     scans: Array<{ date: string; z: number | null; class: FusionClass }>;
     /** Channel series (neighbourhood-relative) for the screen. */
     series: Array<{ key: ChannelKey; dates: string[]; values: Array<number | null> }>;
+    /** Prior-season context used for this unit (shade-prone flag, prior noise). */
+    context: UnitContext;
 }
 
 export type ProducerFusionStatus = 'pruned_full' | 'pruned_partial' | 'none' | 'unclear' | 'no_license' | 'no_data';
@@ -108,20 +120,61 @@ export interface FusionUnassigned {
     likelyAt: string | null;
 }
 
+export interface FusionSummary {
+    byClass: Record<FusionClass, number>;
+    review: number;
+    shadeProne: number;
+    underObserved: number;
+    /** Histogram of clear optical observations per garden in the season window. */
+    opticalObsHistogram: Record<string, number>;
+    medianOpticalObs: number | null;
+    medianOpticalGapDays: number | null;
+    /** How the "pruned" verdicts were reached. */
+    prunedBy: { opticalOnly: number; opticalWithRadar: number; joint: number };
+    radarRequiredShare: number;
+    sensorsUsed: string[];
+    /** Optical dates dropped by the screening (snow / shadow collapse of the neighbourhood median, sparse coverage). */
+    excludedDates: number;
+    /** Robust centre / scale of the garden-unit optical z over the neighbourhood (population calibration). */
+    populationNull: { centre: number; scale: number; n: number } | null;
+    /** Verdicts the population calibration moved down (pruned → likely, likely → unclear). */
+    populationDowngraded: number;
+    /** Weak "unclear" verdicts inside the neighbourhood bulk that the calibration settled as "not pruned". */
+    populationResolved: number;
+    /** Gardens whose optical z clears the "likely" bar; the guard counts below are over these. */
+    strongSignals: number;
+    /** Garden count per verdict kind (why the class is what it is). */
+    kinds: Record<string, number>;
+    /** Physical guards: gradual-loss units, raw-level failures, summer-recovery outcomes, change dates outside the calendar. */
+    gradual: number;
+    levelFailed: number;
+    recoveryConfirmed: number;
+    recoveryFailed: number;
+    recoveryUntested: number;
+    outsideCalendar: number;
+}
+
 export interface FusionSeasonFile {
     season: string;
-    rules: typeof FUSION_RULES;
+    rules: typeof FUSION_RULES & { pruningRatio: number };
     channels: typeof CHANNEL_DEFAULTS;
     everyDays: number;
     scanFrom: string;
     scanTo: string;
-    sensors: { optical: { dates: string[] }; backscatter: Array<{ pass: OrbitPass; relativeOrbit: number; dates: string[] }>; coherence: Array<{ pass: OrbitPass; dates: string[] }> };
+    sensors: {
+        optical: { dates: string[]; sensors?: string[]; counts?: Record<string, number>; excluded?: DateQuality[] };
+        backscatter: Array<{ pass: OrbitPass; relativeOrbit: number; dates: string[]; processing?: string }>;
+        coherence: Array<{ pass: OrbitPass; dates: string[]; source?: string }>;
+    };
     gardens: FusionGarden[];
     producers: FusionProducer[];
     unassigned: FusionUnassigned[];
     /** Share of the neighbourhood covered by harvested TKGM parcels (the rest is "unassigned"). */
     parcelCoverage: number;
     policy: typeof DECISION_POLICY;
+    summary: FusionSummary;
+    /** Prior season used for the per-unit context (null when none was available). */
+    baselineSeason: string | null;
     /** Present when calibrate-fusion ran with --apply: the field-label scores behind the thresholds in `rules`. */
     calibration?: { labels: number; positives: number; negatives: number; recall: number | null; falseAlarmRate: number | null; zPruned: number; zLikely: number; computedAt: string } | null;
 }
@@ -153,6 +206,8 @@ async function main(): Promise<void> {
             neighborhood: { type: 'string' },
             season: { type: 'string', default: '2025' },
             every: { type: 'string', default: '2' },
+            ratio: { type: 'string', default: process.env.PRUNING_RATIO ?? '7' },
+            'no-baseline': { type: 'boolean', default: false },
             refetch: { type: 'boolean', default: false },
         },
     });
@@ -166,6 +221,9 @@ async function main(): Promise<void> {
     const year = Number(values.season);
     const windows = pruningWindows(year);
     const every = Math.max(1, Number(values.every));
+    // ÇAYKUR's rotation: 1/5 (1994–2003), 1/7, 1/10 by the 2012 decree, "1/7" again in 2022 statements — a parameter until confirmed.
+    const pruningRatio = Math.max(2, Math.round(Number(values.ratio) || 7));
+    Object.assign(DECISION_POLICY, { cycleSeasons: pruningRatio });
     const read = <T>(name: string): T => JSON.parse(readFileSync(join(store.dir, name), 'utf8')) as T;
     const parcels = read<FeatureCollection<Poly, { key: string; block: string; parcel: string; teaAreaM2: number | null }>>('parcels-tea.geojson');
     const teaPatches = read<FeatureCollection<Poly>>('tea-patches.geojson');
@@ -213,7 +271,9 @@ async function main(): Promise<void> {
     ];
     console.log(`Sezon ${windows.season}: ${gardens.length} bahçe (+${patches.size} optik değişim yaması, +${freePatches.length} parselsiz çaylık ${Math.round(freePatches.reduce((s, p) => s + p.areaM2, 0) / 1000)} da), ${producers.length} müstahsil, tarama her ${every} gün; parsel kapsaması %${Math.round(parcelCoverage * 100)}`);
 
-    const window: [string, string] = [`${year}-09-01`, `${year + 1}-05-15`];
+    // September (full canopy after the last harvest) to mid-July: the early-summer observations
+    // settle whether a winter step was a deep pruning (canopy still missing) or a light trim.
+    const window: [string, string] = [`${year}-09-01`, `${year + 1}-07-15`];
     const outDir = join(store.dir, 'pruning-fusion');
     // Field calibration (calibrate-fusion --apply): the labelled thresholds replace the synthetic ones.
     const calibrationPath = join(outDir, 'calibration.json');
@@ -230,36 +290,123 @@ async function main(): Promise<void> {
 
     // Raw sensor series are cached: the model is re-run often, the satellite fetch is not.
     interface RawSeries {
-        optical: Awaited<ReturnType<typeof opticalSeries>>;
-        backscatter: Array<{ pass: OrbitPass; relativeOrbit: number; dates: string[]; vh: Record<string, Array<number | null>> }>;
+        version: 2;
+        window?: [string, string];
+        /** Orbit passes already fetched for this window (a pass can legitimately be absent from `backscatter`). */
+        fetchedPasses?: OrbitPass[];
+        optical: OpticalSeries;
+        backscatter: Array<{ pass: OrbitPass; relativeOrbit: number; dates: string[]; processing: string; vh: Record<string, Array<number | null>>; vv: Record<string, Array<number | null>> }>;
     }
     const cachePath = join(outDir, `series-${windows.season}.json`);
-    let raw: RawSeries;
+    const allPasses: OrbitPass[] = ['ASCENDING', 'DESCENDING'];
+    let raw: RawSeries | null = null;
+    let partial: RawSeries | null = null;
     if (existsSync(cachePath) && !values.refetch) {
-        raw = JSON.parse(readFileSync(cachePath, 'utf8')) as RawSeries;
-        console.log(`Sensör serileri önbellekten: ${cachePath}`);
-    } else {
-        const ee = await initEarthEngine();
-        const region = ee.Geometry(meta.boundary);
-        const teaMask = ee.Image(0).byte().paint(ee.FeatureCollection(teaPatches.features.map((f) => ee.Feature(ee.Geometry(f.geometry)))), 1).eq(1);
-        console.log('Sentinel-2 NDVI/NBR serileri…');
-        const optical = await opticalSeries(ee, region, teaMask, units, window);
-        console.log(`  ${optical.dates.length} tarih (${optical.dates[0]} → ${optical.dates.at(-1)})`);
-        const backscatter: RawSeries['backscatter'] = [];
-        for (const pass of ['ASCENDING', 'DESCENDING'] as OrbitPass[]) {
-            console.log(`Sentinel-1 ${pass}…`);
-            const s = await backscatterSeries(ee, region, units, window, pass);
-            if (!s) continue;
-            backscatter.push({ pass, relativeOrbit: s.relativeOrbit, dates: s.dates, vh: Object.fromEntries(Object.entries(s.gardens).map(([id, g]) => [id, g.vh])) });
-            console.log(`  yörünge ${s.relativeOrbit}: ${s.dates.length} tarih`);
+        const cached = JSON.parse(readFileSync(cachePath, 'utf8')) as Partial<RawSeries>;
+        const sameWindow = cached.window?.[0] === window[0] && cached.window?.[1] === window[1];
+        if (cached.version === 2 && cached.optical?.version === 2 && sameWindow) {
+            // Caches written before the per-pass bookkeeping existed are complete.
+            const fetched = cached.fetchedPasses ?? allPasses;
+            if (allPasses.every((p) => fetched.includes(p))) {
+                raw = cached as RawSeries;
+                console.log(`Sensör serileri önbellekten: ${cachePath}`);
+            } else {
+                partial = cached as RawSeries;
+                console.log(`Önbellek kısmi (optik${fetched.length ? ' + ' + fetched.join(', ') : ''}): eksik Sentinel-1 yörüngeleri çekiliyor`);
+            }
+        } else if (cached.version === 2 && cached.optical?.version === 2) console.log(`Önbellek penceresi farklı (${cached.window?.join(' → ') ?? 'yok'} ≠ ${window.join(' → ')}): sensör serileri yeniden çekiliyor`);
+        else console.log('Önbellek eski biçimde (v1): sensör serileri yeniden çekiliyor');
+    }
+    let eeSession: EE | null = null;
+    const ensureEe = async () => (eeSession ??= await initEarthEngine());
+    const teaMaskOf = (ee: EE) => ee.Image(0).byte().paint(ee.FeatureCollection(teaPatches.features.map((f) => ee.Feature(ee.Geometry(f.geometry)))), 1).eq(1);
+    /** Earth Engine capacity errors are often transient: a fetch is retried after a pause before giving up. */
+    const withRetries = async <T>(label: string, fn: () => Promise<T>, attempts = 3): Promise<T> => {
+        for (let attempt = 1; ; attempt++) {
+            try {
+                return await fn();
+            } catch (error) {
+                if (!isCapacityError(error) || attempt >= attempts) throw error;
+                console.log(`  ${label}: Earth Engine kapasite sınırı (${attempt}/${attempts}), 30 s sonra yeniden`);
+                await new Promise((resolve) => setTimeout(resolve, 30_000));
+            }
         }
-        raw = { optical, backscatter };
-        writeFileSync(cachePath, JSON.stringify(raw));
+    };
+    if (!raw) {
+        const ee = await ensureEe();
+        const region = ee.Geometry(meta.boundary);
+        const teaMask = teaMaskOf(ee);
+        let optical: OpticalSeries;
+        let backscatter: RawSeries['backscatter'];
+        const fetchedPasses = new Set<OrbitPass>(partial?.fetchedPasses ?? []);
+        // Every fetched piece is cached at once: a capacity error on a later pass must not cost the optical series.
+        const persist = () => {
+            const snapshot: RawSeries = { version: 2, window, fetchedPasses: [...fetchedPasses], optical, backscatter };
+            writeFileSync(cachePath, JSON.stringify(snapshot));
+        };
+        if (partial) {
+            optical = partial.optical;
+            backscatter = partial.backscatter;
+        } else {
+            console.log('Sentinel-2 + Landsat 8/9 NDVI/NBR/NDRE/NDII serileri…');
+            optical = await withRetries('optik', () => opticalSeries(ee, region, teaMask, units, window));
+            const counts = optical.sensors.reduce<Record<string, number>>((h, s) => ((h[s] = (h[s] ?? 0) + 1), h), {});
+            console.log(`  ${optical.dates.length} tarih (${optical.dates[0]} → ${optical.dates.at(-1)}): ${JSON.stringify(counts)}`);
+            backscatter = [];
+            persist();
+        }
+        for (const pass of allPasses) {
+            if (fetchedPasses.has(pass)) continue;
+            console.log(`Sentinel-1 ${pass} (γ0 arazi düzleştirme)…`);
+            const s = await withRetries(pass, () => backscatterSeries(ee, region, units, window, pass));
+            if (s) {
+                backscatter.push({
+                    pass,
+                    relativeOrbit: s.relativeOrbit,
+                    dates: s.dates,
+                    processing: s.processing,
+                    vh: Object.fromEntries(Object.entries(s.gardens).map(([id, g]) => [id, g.vh])),
+                    vv: Object.fromEntries(Object.entries(s.gardens).map(([id, g]) => [id, g.vv])),
+                });
+                console.log(`  yörünge ${s.relativeOrbit}: ${s.dates.length} tarih`);
+            } else console.log(`  ${pass}: pencerede uygun yörünge yok`);
+            fetchedPasses.add(pass);
+            persist();
+        }
+        raw = { version: 2, window, fetchedPasses: [...fetchedPasses], optical, backscatter };
     }
     const { optical, backscatter } = raw;
-    const cohPath = join(store.dir, 'pruning-radar', `coherence-${windows.season}.json`);
-    const coherence = existsSync(cohPath) ? (JSON.parse(readFileSync(cohPath, 'utf8')) as CoherenceFile) : null;
-    console.log(coherence ? `Koherans: ${coherence.passes.map((p) => `${p.pass} ${p.pairs.length} çift`).join(', ')}` : 'Koherans dosyası yok');
+    // Date screening on the gardens' RAW NDVI: a date whose neighbourhood median collapses (snow,
+    // frost, terrain shadow) or that covers few gardens is dropped for every unit and channel.
+    const quality = dateQuality(optical.dates, Object.fromEntries(gardens.map((g) => [g.id, optical.gardens[g.id]?.ndvi ?? []])), optical.sensors);
+    const excludedDates = quality.filter((q) => !q.ok);
+    console.log(`Optik tarih eleme: ${excludedDates.length}/${quality.length} tarih dışlandı (${excludedDates.filter((q) => q.reason === 'snow_or_shadow').length} kar/gölge çöküşü, ${excludedDates.filter((q) => q.reason === 'sparse').length} seyrek kapsama)${excludedDates.length ? ': ' + excludedDates.map((q) => `${q.date} ${q.sensor ?? ''} (ortanca ${q.medianNdvi ?? '—'}, kapsama %${Math.round(q.coverage * 100)})`).join(', ') : ''}`);
+    // Coherence: the HyP3 burst product when present, else the local SNAP product.
+    const cohCandidates = [join(store.dir, 'pruning-radar', `coherence-hyp3-${windows.season}.json`), join(store.dir, 'pruning-radar', `coherence-${windows.season}.json`)];
+    const cohPath = cohCandidates.find((p) => existsSync(p));
+    const coherence = cohPath ? (JSON.parse(readFileSync(cohPath, 'utf8')) as CoherenceFile) : null;
+    console.log(coherence ? `Koherans (${coherence.source ?? 'snap'}): ${coherence.passes.map((p) => `${p.pass} ${p.pairs.length} çift`).join(', ')}` : 'Koherans dosyası yok');
+
+    // Prior-season context: the unit's own earlier winter tells its habitual noise and whether it
+    // dips transiently (shade / snow pocket). Cached per season; fetched once when missing.
+    const prevWindows = pruningWindows(year - 1);
+    const baselinePath = join(outDir, `baseline-${prevWindows.season}.json`);
+    let baseline: OpticalSeries | null = null;
+    if (!values['no-baseline']) {
+        if (existsSync(baselinePath)) baseline = JSON.parse(readFileSync(baselinePath, 'utf8')) as OpticalSeries;
+        else {
+            const prevCache = join(outDir, `series-${prevWindows.season}.json`);
+            const prev = existsSync(prevCache) ? (JSON.parse(readFileSync(prevCache, 'utf8')) as Partial<RawSeries>) : null;
+            if (prev?.optical?.version === 2) baseline = prev.optical;
+            else {
+                const ee = await ensureEe();
+                console.log(`Önceki sezon (${prevWindows.season}) optik serisi (baz çizgisi)…`);
+                baseline = await opticalSeries(ee, ee.Geometry(meta.boundary), teaMaskOf(ee), units, [`${year - 1}-09-01`, `${year}-05-15`], 0.5, false);
+                writeFileSync(baselinePath, JSON.stringify(baseline));
+            }
+        }
+        if (baseline) console.log(`Baz çizgisi ${prevWindows.season}: ${baseline.dates.length} optik tarih`);
+    }
 
     // Neighbourhood-relative channels. The date medians come from the gardens alone (patches are
     // subsets of them); patch units are then expressed against the same medians.
@@ -282,24 +429,53 @@ async function main(): Promise<void> {
         return rel;
     };
     const unitIds = units.map((u) => u.id);
-    const relNdvi = relativeAll(Object.fromEntries(unitIds.map((id) => [id, optical.gardens[id]?.ndvi ?? []])), 3);
-    const relNbr = relativeAll(Object.fromEntries(unitIds.map((id) => [id, optical.gardens[id]?.nbr ?? []])), 3);
-    const relVh = backscatter.map((b) => ({ ...b, rel: relativeAll(b.vh, 2) }));
+    const relIndex = (key: 'ndvi' | 'nbr' | 'ndre' | 'ndii', src: OpticalSeries, q: DateQuality[]) => relativeAll(applyDateQuality(Object.fromEntries(unitIds.map((id) => [id, src.gardens[id]?.[key] ?? []])), q), 3);
+    const relNdvi = relIndex('ndvi', optical, quality);
+    const relNbr = relIndex('nbr', optical, quality);
+    const relNdre = relIndex('ndre', optical, quality);
+    const relNdii = relIndex('ndii', optical, quality);
+    // Raw NDVI (screened) rides along on the NDVI channel for the absolute-level and recovery guards.
+    const rawNdvi = applyDateQuality(Object.fromEntries(unitIds.map((id) => [id, optical.gardens[id]?.ndvi ?? []])), quality);
+    // VH and the VH/VV ratio (dB difference), both neighbourhood-relative per orbit.
+    const relVh = backscatter.map((b) => ({
+        ...b,
+        rel: relativeAll(b.vh, 2),
+        relRatio: relativeAll(Object.fromEntries(Object.entries(b.vh).map(([id, vh]) => [id, vh.map((v, i) => (v === null || b.vv[id]?.[i] === null || b.vv[id]?.[i] === undefined ? null : Math.round((v - (b.vv[id]![i] as number)) * 100) / 100))])), 2),
+    }));
     const relCoh = (coherence?.passes ?? []).map((p) => ({
         pass: p.pass,
         dates: p.pairs.map(([, d2]) => d2),
         rel: relativeToNeighbourhood(Object.fromEntries(gardens.map((g) => [g.id, coherence!.gardens[g.id]?.[p.pass] ?? []]))),
     }));
-    const channel = (key: ChannelKey, dates: string[], valuesOf: Array<number | null>): ChannelSeries => ({ key, dates, values: valuesOf, ...CHANNEL_DEFAULTS[key] });
+    const channel = (key: ChannelKey, dates: string[], valuesOf: Array<number | null>, raw?: Array<number | null>): ChannelSeries => ({ key, dates, values: valuesOf, ...CHANNEL_DEFAULTS[key], ...(raw ? { raw } : {}) });
     const seriesOf = (id: string): ChannelSeries[] => {
-        const out: ChannelSeries[] = [channel('ndvi', optical.dates, relNdvi[id] ?? []), channel('nbr', optical.dates, relNbr[id] ?? [])];
-        for (const b of relVh) out.push(channel(b.pass === 'ASCENDING' ? 'vh_asc' : 'vh_desc', b.dates, b.rel[id] ?? []));
+        const out: ChannelSeries[] = [
+            channel('ndvi', optical.dates, relNdvi[id] ?? [], rawNdvi[id]),
+            channel('nbr', optical.dates, relNbr[id] ?? []),
+            channel('ndre', optical.dates, relNdre[id] ?? []),
+            channel('ndii', optical.dates, relNdii[id] ?? []),
+        ];
+        for (const b of relVh) {
+            out.push(channel(b.pass === 'ASCENDING' ? 'vh_asc' : 'vh_desc', b.dates, b.rel[id] ?? []));
+            out.push(channel(b.pass === 'ASCENDING' ? 'ratio_asc' : 'ratio_desc', b.dates, b.relRatio[id] ?? []));
+        }
         for (const c of relCoh) out.push(channel(c.pass === 'ASCENDING' ? 'coh_asc' : 'coh_desc', c.dates, c.rel[id] ?? []));
         return out.filter((s) => s.values.some((v) => v !== null));
     };
+    // Prior-season context per unit (gardens and their patches share the garden's context).
+    const contexts = new Map<string, UnitContext>();
+    if (baseline) {
+        const baselineQuality = dateQuality(baseline.dates, Object.fromEntries(gardens.map((g) => [g.id, baseline!.gardens[g.id]?.ndvi ?? []])), baseline.sensors);
+        const prevNdvi = relIndex('ndvi', baseline, baselineQuality);
+        const prevNbr = relIndex('nbr', baseline, baselineQuality);
+        for (const id of unitIds) contexts.set(id, priorContext(baseline.dates, prevNdvi[id] ?? [], prevNbr[id] ?? []));
+    }
+    const contextOf = (id: string): UnitContext => contexts.get(id) ?? contexts.get(id.replace(/#patch$/, '')) ?? {};
 
-    const scanFrom = `${year}-11-01`;
-    const scanTo = `${year + 1}-04-30`;
+    // Emulated scans run from the first possible call to the end of the fetched series: the summer
+    // observations settle the recovery test, so the season verdict is taken with them in view.
+    const scanFrom = `${year}-10-15`;
+    const scanTo = window[1];
     // Earlier seasons of the cycle: their pruned / likely units are the ground that must not be
     // credited again (ÇAYKUR's 1/7 rotates over seven seasons).
     const previousUnits = new Map<string, Array<{ season: string; geometry: Poly; class: FusionClass }>>();
@@ -323,14 +499,65 @@ async function main(): Promise<void> {
 
     console.log('Bahçeler değerlendiriliyor…');
     const rank: Record<FusionClass, number> = { pruned: 4, likely: 3, unclear: 2, not_pruned: 1, no_data: 0 };
-    const outGardens: FusionGarden[] = gardens.map((g) => {
+    type Candidate = { unit: 'garden' | 'patch'; series: ChannelSeries[]; areaM2: number; geometry: Poly; verdict: FusionVerdict };
+    const judgedGardens = gardens.map((g) => {
         // Garden as a whole, and — when the optical scan drew a change patch — that patch alone.
-        const candidates: Array<{ unit: 'garden' | 'patch'; series: ChannelSeries[]; areaM2: number; geometry: Poly }> = [{ unit: 'garden', series: seriesOf(g.id), areaM2: g.areaM2, geometry: g.geometry }];
+        const unitsOf: Array<Omit<Candidate, 'verdict'>> = [{ unit: 'garden', series: seriesOf(g.id), areaM2: g.areaM2, geometry: g.geometry }];
         const patch = patches.get(g.id);
-        if (patch) candidates.push({ unit: 'patch', series: seriesOf(`${g.id}#patch`), areaM2: patch.areaM2, geometry: patch.geometry });
-        const judged = candidates.map((c) => ({ ...c, verdict: judge(c.series, scanTo) }));
-        const best = judged.sort((a, b) => rank[b.verdict.class] - rank[a.verdict.class] || (b.verdict.z ?? 0) - (a.verdict.z ?? 0))[0]!;
-        const timeline = scanTimeline(best.series, scanFrom, scanTo, every);
+        if (patch) unitsOf.push({ unit: 'patch', series: seriesOf(`${g.id}#patch`), areaM2: patch.areaM2, geometry: patch.geometry });
+        const ctx = contextOf(g.id);
+        const judged: Candidate[] = unitsOf.map((c) => ({ ...c, verdict: judge(c.series, scanTo, ctx) }));
+        return { g, ctx, judged };
+    });
+    // Population calibration. Never more than a seventh of the tea is cut in a season, so the
+    // garden-unit optical z of the whole neighbourhood is dominated by unpruned gardens: its robust
+    // centre and spread are the empirical null of the max-over-dates statistic (autocorrelation,
+    // mixed sensors and the date search inflate it beyond N(0,1)). A "pruned" verdict must also
+    // stand FUSION_RULES.populationZPruned robust σ above that bulk; the scale never drops below
+    // the nominal 1 so a very quiet neighbourhood does not manufacture outliers.
+    const bulk = judgedGardens.map((j) => j.judged.find((c) => c.unit === 'garden')?.verdict.groups.find((x) => x.group === 'optical')?.z).filter((v): v is number => v !== null && v !== undefined).sort((a, b) => a - b);
+    const quantile = (xs: number[], q: number) => xs[Math.min(xs.length - 1, Math.max(0, Math.round(q * (xs.length - 1))))]!;
+    const populationNull = bulk.length >= 20 ? { centre: Math.round(quantile(bulk, 0.5) * 1000) / 1000, scale: Math.round(Math.max(1, (quantile(bulk, 0.75) - quantile(bulk, 0.25)) / 1.349) * 1000) / 1000, n: bulk.length } : null;
+    const downgraded = new WeakSet<FusionVerdict>();
+    const resolved = new WeakSet<FusionVerdict>();
+    const calibrate = (v: FusionVerdict): FusionVerdict => {
+        const optZ = v.groups.find((x) => x.group === 'optical')?.z ?? null;
+        if (!populationNull || optZ === null) return v;
+        const populationZ = Math.round(((optZ - populationNull.centre) / populationNull.scale) * 1000) / 1000;
+        const out: FusionVerdict = { ...v, populationZ };
+        const weak = out.z !== null && out.z < FUSION_RULES.zLikely && out.shape?.gradual !== true;
+        if (out.class === 'pruned' && populationZ < FUSION_RULES.populationZPruned) {
+            out.class = 'likely';
+            out.kind = 'population';
+            out.review = true;
+            out.reason += ` · mahalle geneline göre yeterince ayrışmıyor (toplum z ${populationZ.toFixed(1)} < ${FUSION_RULES.populationZPruned}), eksper incelemeli`;
+            downgraded.add(out);
+        } else if (out.class === 'likely' && populationZ < FUSION_RULES.populationZLikely) {
+            out.class = 'unclear';
+            out.kind = 'population';
+            out.reason += ` · mahalle geneline göre ayrışmıyor (toplum z ${populationZ.toFixed(1)} < ${FUSION_RULES.populationZLikely})`;
+            downgraded.add(out);
+        } else if (out.class === 'unclear' && weak && (populationZ < FUSION_RULES.populationZLikely || out.recovery?.ok === false)) {
+            // The bulk of the neighbourhood IS the null: a weak signal inside it is no signal; and a
+            // weak signal whose summer canopy is level with the neighbours has nothing to show either.
+            out.class = 'not_pruned';
+            out.kind = 'bulk';
+            out.review = false;
+            out.reason = populationZ < FUSION_RULES.populationZLikely
+                ? `Mahalle geneliyle aynı davranış (toplum z ${populationZ.toFixed(1)}; zayıf sinyal z ${(out.z ?? 0).toFixed(1)}): kalıcı örtü kaybı yok`
+                : `Zayıf sinyal (z ${(out.z ?? 0).toFixed(1)}) ve yaz başında örtü komşularıyla aynı düzeyde: kalıcı örtü kaybı yok`;
+            resolved.add(out);
+        }
+        return out;
+    };
+    if (populationNull) console.log(`Toplum kalibrasyonu: bahçe birimi optik z ortancası ${populationNull.centre}, sağlam ölçek ${populationNull.scale} (${populationNull.n} bahçe)`);
+    let populationDowngraded = 0;
+    let populationResolved = 0;
+    const outGardens: FusionGarden[] = judgedGardens.map(({ g, ctx, judged }) => {
+        const best = judged.map((c) => ({ ...c, verdict: calibrate(c.verdict) })).sort((a, b) => rank[b.verdict.class] - rank[a.verdict.class] || (b.verdict.z ?? 0) - (a.verdict.z ?? 0))[0]!;
+        if (downgraded.has(best.verdict)) populationDowngraded++;
+        if (resolved.has(best.verdict)) populationResolved++;
+        const timeline = scanTimeline(best.series, scanFrom, scanTo, every, ctx);
         // A scan may call a garden "pruned" and later data may withdraw it: the dates reported
         // are the first scans that reached the verdict the full season finally supports.
         const finalPruned = best.verdict.class === 'pruned';
@@ -358,16 +585,59 @@ async function main(): Promise<void> {
             likelyAt: finalLikely ? timeline.likelyAt : null,
             scans: timeline.scans,
             series: best.series.map((s) => ({ key: s.key, dates: s.dates, values: s.values })),
+            context: ctx,
         };
     });
     const counts = outGardens.reduce<Record<string, number>>((h, g) => ((h[g.verdict.class] = (h[g.verdict.class] ?? 0) + 1), h), {});
     console.log(`Bahçe kararları: ${JSON.stringify(counts)}`);
+    const medianOf = (xs: number[]) => (xs.length ? [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)]! : null);
+    const obsHist: Record<string, number> = {};
+    for (const g of outGardens) {
+        const n = g.verdict.observability.opticalObs;
+        const bin = n < 8 ? '<8' : n < 16 ? '8–15' : n < 24 ? '16–23' : '≥24';
+        obsHist[bin] = (obsHist[bin] ?? 0) + 1;
+    }
+    const prunedGardens = outGardens.filter((g) => g.verdict.class === 'pruned');
+    // Gardens whose optical group alone clears the "likely" bar: the physical guards are reported over these.
+    const strong = outGardens.filter((g) => (g.verdict.groups.find((x) => x.group === 'optical')?.z ?? 0) >= FUSION_RULES.zLikely);
+    const summary: FusionSummary = {
+        byClass: { pruned: counts.pruned ?? 0, likely: counts.likely ?? 0, unclear: counts.unclear ?? 0, not_pruned: counts.not_pruned ?? 0, no_data: counts.no_data ?? 0 },
+        review: outGardens.filter((g) => g.verdict.review).length,
+        shadeProne: outGardens.filter((g) => g.verdict.shadeProne).length,
+        underObserved: outGardens.filter((g) => g.verdict.observability.underObserved).length,
+        opticalObsHistogram: obsHist,
+        medianOpticalObs: medianOf(outGardens.map((g) => g.verdict.observability.opticalObs)),
+        medianOpticalGapDays: medianOf(outGardens.map((g) => g.verdict.observability.opticalGapDays).filter((v): v is number => v !== null)),
+        prunedBy: {
+            opticalOnly: prunedGardens.filter((g) => !g.verdict.backscatterOk && !g.verdict.coherenceOk).length,
+            opticalWithRadar: prunedGardens.filter((g) => g.verdict.opticalOk && (g.verdict.backscatterOk || g.verdict.coherenceOk) && !(g.verdict.z !== null && g.verdict.z >= FUSION_RULES.zPruned && g.verdict.backscatterOk)).length,
+            joint: prunedGardens.filter((g) => g.verdict.opticalOk && g.verdict.backscatterOk && g.verdict.z !== null && g.verdict.z >= FUSION_RULES.zPruned).length,
+        },
+        radarRequiredShare: outGardens.length ? Math.round((outGardens.filter((g) => g.verdict.radarRequired).length / outGardens.length) * 1000) / 1000 : 0,
+        sensorsUsed: [...new Set([...(optical.sensors ?? []), ...backscatter.map(() => 'S1'), ...(coherence ? [`coh-${coherence.source ?? 'snap'}`] : [])])],
+        excludedDates: excludedDates.length,
+        populationNull,
+        populationDowngraded,
+        populationResolved,
+        strongSignals: strong.length,
+        kinds: outGardens.reduce<Record<string, number>>((h, g) => ((h[g.verdict.kind ?? 'none'] = (h[g.verdict.kind ?? 'none'] ?? 0) + 1), h), {}),
+        gradual: strong.filter((g) => g.verdict.shape?.gradual).length,
+        levelFailed: strong.filter((g) => g.verdict.levels?.ok === false).length,
+        recoveryConfirmed: strong.filter((g) => g.verdict.recovery?.ok === true).length,
+        recoveryFailed: strong.filter((g) => g.verdict.recovery?.ok === false).length,
+        recoveryUntested: strong.filter((g) => !g.verdict.recovery || g.verdict.recovery.ok === null).length,
+        outsideCalendar: outGardens.filter((g) => g.verdict.inCalendar === false && (g.verdict.class === 'pruned' || g.verdict.class === 'likely')).length,
+    };
+    console.log(`Karar türleri: ${JSON.stringify(summary.kinds)}`);
+    console.log(`Fiziksel kontroller (güçlü optik sinyalli ${summary.strongSignals} bahçede): kademeli kayıp ${summary.gradual}, ham NDVI düşmeyen ${summary.levelFailed}, yaz toparlanma testi ✓ ${summary.recoveryConfirmed} / ✗ ${summary.recoveryFailed} / test edilemedi ${summary.recoveryUntested}; takvim dışı ${summary.outsideCalendar}; toplum kalibrasyonu: ${summary.populationDowngraded} karar indirildi, ${summary.populationResolved} zayıf sinyal "budama yok" oldu`);
+    console.log(`Gözlenebilirlik: optik gözlem ortancası ${summary.medianOpticalObs}, boşluk ortancası ${summary.medianOpticalGapDays} gün, az gözlenen ${summary.underObserved}, gölgeye yatkın ${summary.shadeProne}; incelensin ${summary.review}; kesin kararlar ${JSON.stringify(summary.prunedBy)}`);
 
     // Free tea patches outside the harvested parcels.
     const outUnassigned: FusionUnassigned[] = freePatches.map((p) => {
         const series = seriesOf(p.id);
-        const verdict = judge(series, scanTo);
-        const timeline = scanTimeline(series, scanFrom, scanTo, every);
+        const ctx = contextOf(p.id);
+        const verdict = calibrate(judge(series, scanTo, ctx));
+        const timeline = scanTimeline(series, scanFrom, scanTo, every, ctx);
         return { id: p.id, areaM2: p.areaM2, geometry: p.geometry, verdict, detectedAt: verdict.class === 'pruned' ? timeline.detectedAt : null, likelyAt: verdict.class === 'pruned' || verdict.class === 'likely' ? timeline.likelyAt : null };
     });
     const uCounts = outUnassigned.reduce<Record<string, number>>((h, u) => ((h[u.verdict.class] = (h[u.verdict.class] ?? 0) + 1), h), {});
@@ -378,7 +648,7 @@ async function main(): Promise<void> {
     const outProducers: FusionProducer[] = producers.map((p) => {
         const own = p.gardenIds.map((id) => gardenById.get(id)).filter((g): g is FusionGarden => !!g);
         const licensed = own.reduce((s, g) => s + (g.licensedAreaM2 ?? 0), 0);
-        const required = licensed / 7;
+        const required = licensed / pruningRatio;
         const pruned = own.filter((g) => g.verdict.class === 'pruned');
         const likely = own.filter((g) => g.verdict.class === 'likely');
         // The pruned area is the unit that carried the verdict (the patch when only part was cut);
@@ -394,7 +664,9 @@ async function main(): Promise<void> {
         else if (credited.length && counted >= required) status = 'pruned_full';
         else if (pruned.length || likely.length) status = 'pruned_partial';
         else if (own.every((g) => g.verdict.class === 'no_data')) status = 'no_data';
-        else if (own.some((g) => g.verdict.class === 'unclear')) status = 'unclear';
+        // Only an 'unclear' the model itself flags for review keeps the file open; a recovered winter dip or a
+        // weak signal is settled ground (no deep pruning), not an open question.
+        else if (own.some((g) => g.verdict.class === 'unclear' && g.verdict.review)) status = 'unclear';
         else status = 'none';
         const detected = pruned.map((g) => g.detectedAt).filter((d): d is string => !!d).sort();
 
@@ -431,14 +703,14 @@ async function main(): Promise<void> {
         } else if (status === 'no_data') {
             decision = 'no_data';
             decisionReason = 'Bahçelerde yeterli gözlem yok';
-        } else if (pruned.length || likely.length || own.some((g) => g.verdict.class === 'unclear')) {
+        } else if (pruned.length || likely.length || own.some((g) => g.verdict.class === 'unclear' && g.verdict.review)) {
             decision = 'auto_pending';
             decisionReason = reused > 0
                 ? `Tekrar budanan ${Math.round(reused)} m² sayılmadı; ${Math.round(shortfall)} m² daha budanmalı`
                 : `Budama izi var, hedef henüz dolmadı; ${Math.round(shortfall)} m² daha budanmalı`;
         } else {
             decision = 'auto_none';
-            decisionReason = 'Bütün bahçeler iyi gözlendi, budama görülmedi';
+            decisionReason = own.some((g) => g.verdict.class === 'unclear') ? 'Bahçelerde derin budama görülmedi (hafif budama/kar hasarı ya da zayıf sinyal kalabilir)' : 'Bütün bahçeler iyi gözlendi, budama görülmedi';
         }
         return {
             id: p.id,
@@ -466,21 +738,23 @@ async function main(): Promise<void> {
 
     const out: FusionSeasonFile = {
         season: windows.season,
-        rules: FUSION_RULES,
+        rules: { ...FUSION_RULES, pruningRatio },
         channels: CHANNEL_DEFAULTS,
         everyDays: every,
         scanFrom,
         scanTo,
         sensors: {
-            optical: { dates: optical.dates },
-            backscatter: backscatter.map((b) => ({ pass: b.pass, relativeOrbit: b.relativeOrbit, dates: b.dates })),
-            coherence: relCoh.map((c) => ({ pass: c.pass, dates: c.dates })),
+            optical: { dates: optical.dates, sensors: optical.sensors, counts: optical.sensors.reduce<Record<string, number>>((h, s) => ((h[s] = (h[s] ?? 0) + 1), h), {}), excluded: excludedDates },
+            backscatter: backscatter.map((b) => ({ pass: b.pass, relativeOrbit: b.relativeOrbit, dates: b.dates, processing: b.processing })),
+            coherence: relCoh.map((c) => ({ pass: c.pass, dates: c.dates, source: coherence?.source ?? 'snap' })),
         },
         gardens: outGardens,
         producers: outProducers,
         unassigned: outUnassigned,
         parcelCoverage,
         policy: DECISION_POLICY,
+        summary,
+        baselineSeason: baseline ? prevWindows.season : null,
         calibration,
     };
     const outPath = join(outDir, `season-${windows.season}.json`);
