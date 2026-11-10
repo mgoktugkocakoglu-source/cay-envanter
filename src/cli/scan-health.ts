@@ -4,7 +4,7 @@ import { parseArgs } from 'node:util';
 import type { FeatureCollection, MultiPolygon, Polygon } from 'geojson';
 import { initEarthEngine } from '../ee/session.ts';
 import { NeighborhoodStore } from '../library/store.ts';
-import { buildDemoProducers } from '../producers/demo-producers.ts';
+import { buildDemoProducers, loadDemoLayout } from '../producers/demo-producers.ts';
 import { currentGeometry, type LicensingRegistry } from '../licensing/registry.ts';
 import { backscatterSeries, type OrbitPass } from '../radar/series.ts';
 import { growingSeries, type GrowingSeries } from '../health/optical.ts';
@@ -76,7 +76,7 @@ async function main(): Promise<void> {
     const teaPatches = read<FeatureCollection<Poly>>('tea-patches.geojson');
     const registryPath = join(store.dir, 'licensing', 'registry.json');
     const registry = existsSync(registryPath) ? (JSON.parse(readFileSync(registryPath, 'utf8')) as LicensingRegistry) : null;
-    const { producers, gardens: slices } = buildDemoProducers(parcels.features.map((f) => ({ ...f.properties, geometry: f.geometry })));
+    const { producers, gardens: slices } = buildDemoProducers(parcels.features.map((f) => ({ ...f.properties, geometry: f.geometry })), 2026, loadDemoLayout(store.dir));
     const byCode = new Map(registry?.gardens.map((g) => [g.code, g]) ?? []);
     const gardens = slices.map((g) => {
         const reg = byCode.get(g.id);

@@ -6,7 +6,7 @@ import type { Feature, FeatureCollection, MultiPolygon, Polygon } from 'geojson'
 import { initEarthEngine, evaluate } from '../ee/session.ts';
 import { clearScenes, opticalComposite, pruningWindows, relativeDrop } from '../ee/pruning.ts';
 import { NeighborhoodStore } from '../library/store.ts';
-import { buildDemoProducers, type DemoGarden } from '../producers/demo-producers.ts';
+import { buildDemoProducers, loadDemoLayout, type DemoGarden } from '../producers/demo-producers.ts';
 import { CYCLE_SEASONS } from '../producers/compliance.ts';
 import { evaluateProducerSeason, type GardenSeries } from '../producers/evaluate.ts';
 import { producerLicensedAreaM2, type LicensingRegistry } from '../licensing/registry.ts';
@@ -140,7 +140,7 @@ async function main(): Promise<void> {
     const teaPatches = read<FeatureCollection<Poly>>('tea-patches.geojson');
     if (!meta) throw new Error('meta.json yok; önce harvest çalıştırın.');
 
-    const { producers, gardens } = buildDemoProducers(parcels.features.map((f) => ({ ...f.properties, geometry: f.geometry })));
+    const { producers, gardens } = buildDemoProducers(parcels.features.map((f) => ({ ...f.properties, geometry: f.geometry })), 2026, loadDemoLayout(store.dir));
     const unresolved = gardens.filter((g) => !g.boundaryResolved).length;
     console.log(`Demo kayıt: ${producers.length} müstahsil, ${gardens.length} bahçe (${unresolved} bahçenin hisse sınırı belirsiz)`);
 

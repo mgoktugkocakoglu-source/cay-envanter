@@ -18,6 +18,7 @@
         "build-licensing": "node src/cli/build-licensing.ts",
         "detect-pruning-radar": "node src/cli/detect-pruning-radar.ts",
         "fuse-pruning": "node src/cli/fuse-pruning.ts",
+        "demo-layout": "node src/cli/demo-layout.ts",
         "calibrate-fusion": "node src/cli/calibrate-fusion.ts",
         "scan-health": "node src/cli/scan-health.ts",
         "pipeline": "node src/cli/pipeline.ts",

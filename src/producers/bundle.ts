@@ -11,7 +11,7 @@ import {
     REQUIRED_FRACTION,
     type ProducerStatus,
 } from './compliance.ts';
-import { buildDemoProducers } from './demo-producers.ts';
+import { buildDemoProducers, loadDemoLayout } from './demo-producers.ts';
 import { evaluateProducerSeason, type GardenSeries } from './evaluate.ts';
 import { currentGeometry, producerLicensedAreaM2, type LicensingRegistry } from '../licensing/registry.ts';
 
@@ -93,7 +93,7 @@ export function loadProducersForBundle(
     const seasons = files.map((n) => JSON.parse(readFileSync(join(dir, n), 'utf8')) as SeasonScanFile);
 
     // Same deterministic register the scans used, so garden ids line up.
-    const { producers, gardens } = buildDemoProducers(parcels);
+    const { producers, gardens } = buildDemoProducers(parcels, 2026, loadDemoLayout(neighborhoodDir));
     const resolvedById = new Map(gardens.map((g) => [g.id, g.boundaryResolved]));
 
     // With a licence register, every season is re-judged offline on the register's licensed

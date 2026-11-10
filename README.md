@@ -236,6 +236,14 @@ fiziksel kontrolü de geçen bahçelere daraldı, eksper kuyruğu 87'den 14'e d�
 Sonraki kaldıraçlar: saha etiketleriyle eşik kalibrasyonu (`calibrate-fusion`), HyP3 koheransının tüm mahallelere
 yayılması, 50 cm optik örneklem (satın alma askıda).
 
+**Demo müstahsil düzeni (`npm run demo-layout -- --province Trabzon --district Of --neighborhood Çataldere --season 2025`):**
+ÇAYKUR'un gerçek müstahsil ↔ bahçe kaydı gelene kadar müstahsiller DEMO üretimidir. Bu araç, uydunun o sezon GERÇEKTEN
+budanmış/olası gördüğü birimleri birer vitrin müstahsiline verir ve yanına, toplam ruhsatlı alan 1/oran hedefini karşılayacak
+ama aşırı budama sınırını (3×) aşmayacak kadar budanmamış bahçe ekler (`producers/demo-layout.json`; bu müstahsillerin
+ruhsatı her zaman temiz/eşleşen çıkar). Bahçe sınırları, uydu serileri ve kararlar değişmez — yalnız kimin hangi bahçeyi
+tuttuğu ve ruhsat alanı değişir; budanmamış bir alan asla budanmış gösterilmez. Sonra `build-licensing` → `fuse-pruning`
+(önbellekten) → `scan-health` (önbellekten) → `export-site`.
+
 **Parselsiz çaylıklar:** TKGM hasadı günlük kotayla büyüdüğü için (Çataldere %56) parsel dışında kalan
 çay yamaları (≥ 300 m²) `unassigned` birimler olarak aynı modelle yargılanır; parsel/ruhsat gelince
 sahibine bağlanır. Hasat büyüdükçe zincir (detect-tea → scan-producers → build-licensing → fuse-pruning)

@@ -375,12 +375,14 @@ export function buildLicensingRegistry(input: RegistryInputs, seed = 2027): Lice
         const own = producer.gardenIds.map((id) => gardenByCode.get(id)).filter((g): g is LicensedGarden => !!g);
         if (own.length === 0) continue;
         // One licence per producer; a second one for some producers with several gardens (two wallets happen).
-        const split = own.length >= 3 && random() < 0.25;
+        const split = !producer.showcase && own.length >= 3 && random() < 0.25;
         const groups: LicensedGarden[][] = split ? [own.slice(0, Math.ceil(own.length / 2)), own.slice(Math.ceil(own.length / 2))] : [own];
         for (const group of groups) {
             // Faulty licences are rare in the field: ~94 % match, a few percent off, almost no ghosts.
             const roll = random();
-            const scenario = roll < 0.94 ? 'matching' : roll < 0.96 ? 'inflated' : roll < 0.98 ? 'understated' : roll < 0.99 ? 'ghost' : 'unlicensed';
+            // Showcase producers (demo layout) always carry a clean, matching licence: the demo must
+            // show the pruning workflow, not the licence-fault workflow, on those files.
+            const scenario = producer.showcase ? 'matching' : roll < 0.94 ? 'matching' : roll < 0.96 ? 'inflated' : roll < 0.98 ? 'understated' : roll < 0.99 ? 'ghost' : 'unlicensed';
             if (scenario === 'unlicensed') {
                 // Tea on the ground, no licence anywhere: a new-licence application may or may not exist.
                 for (const g of group) g.discrepancies.push('no_license');
@@ -408,10 +410,10 @@ export function buildLicensingRegistry(input: RegistryInputs, seed = 2027): Lice
             const serial = licenses.length + 1;
             const code = `DEMO-R-${String(9000 + serial)}`;
             const issuedYear = 1972 + Math.floor(random() * 50);
-            const holderDeceased = issuedYear < 1992 && random() < 0.08;
+            const holderDeceased = !producer.showcase && issuedYear < 1992 && random() < 0.08;
             // Match level of the parcel reference(s) written on the licence: almost all resolve.
             const mroll = random();
-            const matchLevel: MatchLevel = mroll < 0.9 ? 'exact' : mroll < 0.97 ? 'historical' : mroll < 0.99 ? 'probable' : 'unmatched';
+            const matchLevel: MatchLevel = producer.showcase ? 'exact' : mroll < 0.9 ? 'exact' : mroll < 0.97 ? 'historical' : mroll < 0.99 ? 'probable' : 'unmatched';
             const refs: string[] = [];
             const matched: string[] = [];
             const lineageCodes: string[] = [];
@@ -451,7 +453,7 @@ export function buildLicensingRegistry(input: RegistryInputs, seed = 2027): Lice
             // Recorded area: the scenario applied to the measured tea of the licence's gardens.
             const measured = group.reduce((s, g) => s + g.measuredTeaAreaM2, 0);
             const planimetric = group.reduce((s, g) => s + g.planimetricAreaM2, 0);
-            const factor = scenario === 'matching' ? 0.9 + random() * 0.2 : scenario === 'inflated' ? 1.6 + random() * 1.2 : scenario === 'understated' ? 0.45 + random() * 0.2 : 1;
+            const factor = producer.showcase ? 0.97 + random() * 0.06 : scenario === 'matching' ? 0.9 + random() * 0.2 : scenario === 'inflated' ? 1.6 + random() * 1.2 : scenario === 'understated' ? 0.45 + random() * 0.2 : 1;
             // A ghost licence cites a plausible garden size, never the whole (sometimes huge) parcel.
             const base = scenario === 'ghost' ? Math.min(planimetric, 3000) * (0.6 + random() * 0.4) : Math.max(measured, 120) * factor;
             const recordedAreaM2 = Math.max(MIN_LICENSE_M2 * (group.length > 1 || base > 700 ? 1 : 0.1), Math.round(base / 10) * 10);

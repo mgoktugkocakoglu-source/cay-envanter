@@ -4,7 +4,7 @@ import { parseArgs } from 'node:util';
 import type { FeatureCollection, MultiPolygon, Polygon } from 'geojson';
 import { initEarthEngine, evaluate } from '../ee/session.ts';
 import { NeighborhoodStore } from '../library/store.ts';
-import { buildDemoProducers } from '../producers/demo-producers.ts';
+import { buildDemoProducers, loadDemoLayout } from '../producers/demo-producers.ts';
 import { buildLicensingRegistry } from '../licensing/registry.ts';
 
 const USAGE = `
@@ -32,7 +32,7 @@ async function main(): Promise<void> {
     const teaPatches = read<FeatureCollection<Polygon | MultiPolygon>>('tea-patches.geojson');
     if (!meta) throw new Error('meta.json yok; önce harvest çalıştırın.');
 
-    const { producers, gardens } = buildDemoProducers(parcels.features.map((f) => ({ ...f.properties, geometry: f.geometry })));
+    const { producers, gardens } = buildDemoProducers(parcels.features.map((f) => ({ ...f.properties, geometry: f.geometry })), 2026, loadDemoLayout(store.dir));
 
     // Measured tea per garden from the latest producer scan (already computed on the tea mask).
     const teaAreaByGarden = new Map<string, number>();

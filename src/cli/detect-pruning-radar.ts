@@ -5,7 +5,7 @@ import type { FeatureCollection, MultiPolygon, Polygon } from 'geojson';
 import { initEarthEngine } from '../ee/session.ts';
 import { pruningWindows } from '../ee/pruning.ts';
 import { NeighborhoodStore } from '../library/store.ts';
-import { buildDemoProducers } from '../producers/demo-producers.ts';
+import { buildDemoProducers, loadDemoLayout } from '../producers/demo-producers.ts';
 import { currentGeometry, type LicensingRegistry } from '../licensing/registry.ts';
 import { backscatterSeries, type OrbitPass, type PassSeries } from '../radar/series.ts';
 import { RADAR_RULES, radarOnlyCandidate, relativeCoherence, relativeSeries, scoreEvent, type RadarResult, type RelativeSeries } from '../radar/score.ts';
@@ -69,7 +69,7 @@ async function main(): Promise<void> {
 
     // Garden geometries: the licensed tea sub-polygon when the register exists, else the demo slice.
     const parcels = JSON.parse(readFileSync(join(store.dir, 'parcels-tea.geojson'), 'utf8')) as FeatureCollection<Poly, { key: string; block: string; parcel: string; teaAreaM2: number | null }>;
-    const { gardens: slices } = buildDemoProducers(parcels.features.map((f) => ({ ...f.properties, geometry: f.geometry })));
+    const { gardens: slices } = buildDemoProducers(parcels.features.map((f) => ({ ...f.properties, geometry: f.geometry })), 2026, loadDemoLayout(store.dir));
     const registryPath = join(store.dir, 'licensing', 'registry.json');
     const registry = existsSync(registryPath) ? (JSON.parse(readFileSync(registryPath, 'utf8')) as LicensingRegistry) : null;
     const byCode = new Map(registry?.gardens.map((g) => [g.code, g]) ?? []);

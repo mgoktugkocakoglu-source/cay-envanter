@@ -8,6 +8,8 @@
  * Pruning is then judged per producer over all their gardens (the 1/7 rule applies to the
  * producer's licensed tea, not to a parcel).
  */
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { area, bbox, bboxClip, feature } from '@turf/turf';
 import type { Feature, MultiPolygon, Polygon } from 'geojson';
 
@@ -39,6 +41,30 @@ export interface DemoProducer {
     walletNo: string;
     licenseNo: string;
     gardenIds: string[];
+    /** Built from a demo layout group: the register gives this producer a clean, matching licence. */
+    showcase?: boolean;
+}
+
+/**
+ * Optional demo layout (`producers/demo-layout.json`, written by `npm run demo-layout`): explicit
+ * garden groups that become the first producers. The garden slices themselves never change — only
+ * who holds them — so satellite series, change patches and verdicts stay valid. Used to make the
+ * DEMO register look like the field, where nearly every producer prunes a seventh each season:
+ * the gardens the satellite really saw pruned are given to producers whose licensed area makes
+ * the 1/7 target reachable. Verdicts are never touched.
+ */
+export interface DemoLayout {
+    generatedAt: string;
+    season: string;
+    note?: string;
+    groups: Array<{ gardenIds: string[]; anchor: string; reason: string }>;
+}
+
+export function loadDemoLayout(neighborhoodDir: string): DemoLayout | null {
+    const path = join(neighborhoodDir, 'producers', 'demo-layout.json');
+    if (!existsSync(path)) return null;
+    const layout = JSON.parse(readFileSync(path, 'utf8')) as DemoLayout;
+    return Array.isArray(layout.groups) && layout.groups.length > 0 ? layout : null;
 }
 
 export interface TeaParcelInput {
@@ -110,7 +136,7 @@ export function splitEqualStrips(geometry: Polygon | MultiPolygon, count: number
     });
 }
 
-export function buildDemoProducers(parcels: TeaParcelInput[], seed = 2026): { producers: DemoProducer[]; gardens: DemoGarden[] } {
+export function buildDemoProducers(parcels: TeaParcelInput[], seed = 2026, layout: DemoLayout | null = null): { producers: DemoProducer[]; gardens: DemoGarden[] } {
     const random = mulberry32(seed);
     const pick = <T>(items: T[]): T => items[Math.floor(random() * items.length)] as T;
 
@@ -140,6 +166,24 @@ export function buildDemoProducers(parcels: TeaParcelInput[], seed = 2026): { pr
     // 2. Producers: deal the gardens out, 1–6 each, never two gardens of the same parcel.
     const pool = [...gardens].sort(() => random() - 0.5);
     const producers: DemoProducer[] = [];
+    // Layout groups first (showcase producers), taken out of the pool; unknown ids are ignored.
+    const byId = new Map(gardens.map((g) => [g.id, g]));
+    for (const group of layout?.groups ?? []) {
+        const own = group.gardenIds.map((id) => byId.get(id)).filter((g): g is DemoGarden => !!g && pool.includes(g));
+        if (own.length === 0) continue;
+        for (const g of own) pool.splice(pool.indexOf(g), 1);
+        const serial = producers.length + 1;
+        const id = `DEMO-M-${String(serial).padStart(4, '0')}`;
+        for (const garden of own) garden.producerId = id;
+        producers.push({
+            id,
+            name: `${pick(FIRST)} ${pick(LAST)}`,
+            walletNo: `DEMO-C-${String(70_000 + serial)}`,
+            licenseNo: `DEMO-R-${String(9_000 + serial)}`,
+            gardenIds: own.map((g) => g.id),
+            showcase: true,
+        });
+    }
     while (pool.length > 0) {
         const wanted = weighted(random, GARDEN_WEIGHTS);
         const own: DemoGarden[] = [];

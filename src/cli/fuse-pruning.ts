@@ -4,9 +4,10 @@ import { parseArgs } from 'node:util';
 import type { Feature, FeatureCollection, MultiPolygon, Polygon } from 'geojson';
 import { area as turfArea, difference, feature, featureCollection, intersect, union } from '@turf/turf';
 import { initEarthEngine, isCapacityError } from '../ee/session.ts';
+import { DECISION_POLICY } from '../fusion/policy.ts';
 import { pruningWindows } from '../ee/pruning.ts';
 import { NeighborhoodStore } from '../library/store.ts';
-import { buildDemoProducers } from '../producers/demo-producers.ts';
+import { buildDemoProducers, loadDemoLayout } from '../producers/demo-producers.ts';
 import { currentGeometry, type LicensingRegistry } from '../licensing/registry.ts';
 import { backscatterSeries, type OrbitPass } from '../radar/series.ts';
 import { opticalSeries, type OpticalSeries } from '../fusion/optical-series.ts';
@@ -179,24 +180,7 @@ export interface FusionSeasonFile {
     calibration?: { labels: number; positives: number; negatives: number; recall: number | null; falseAlarmRate: number | null; zPruned: number; zLikely: number; computedAt: string } | null;
 }
 
-export const DECISION_POLICY = {
-    /** "Likely" units count toward the 1/7 like confirmed ones (they keep their own label on screen). */
-    likelyCounts: true,
-    /** Pruned area above this multiple of the 1/7 target is suspicious (clearing, not pruning). */
-    overPrunedRatio: 3.0,
-    /** Seasons in the pruning rotation: ground pruned within this many earlier seasons does not count again. */
-    cycleSeasons: 7,
-    /** Reused share of a unit that is flagged as repeat pruning (always subtracted, flagged above this). */
-    repeatShare: 0.2,
-    /**
-     * Anomalies that send the file to an expert; the others (repeat pruning, licence-area mismatch,
-     * unresolved share boundary) are notes: repeat pruning is subtracted automatically and the
-     * shortfall is written, no expert needed.
-     */
-    blocking: ['sensors_contradict', 'boundary_conflict', 'unlicensed_pruning', 'over_pruned'] as FusionAnomaly[],
-    /** Smallest free tea patch judged on its own (m²). */
-    minUnassignedM2: 300,
-} as const;
+export { DECISION_POLICY };
 
 async function main(): Promise<void> {
     const { values } = parseArgs({
@@ -229,7 +213,7 @@ async function main(): Promise<void> {
     const teaPatches = read<FeatureCollection<Poly>>('tea-patches.geojson');
     const registryPath = join(store.dir, 'licensing', 'registry.json');
     const registry = existsSync(registryPath) ? (JSON.parse(readFileSync(registryPath, 'utf8')) as LicensingRegistry) : null;
-    const { producers, gardens: slices } = buildDemoProducers(parcels.features.map((f) => ({ ...f.properties, geometry: f.geometry })));
+    const { producers, gardens: slices } = buildDemoProducers(parcels.features.map((f) => ({ ...f.properties, geometry: f.geometry })), 2026, loadDemoLayout(store.dir));
     const byCode = new Map(registry?.gardens.map((g) => [g.code, g]) ?? []);
     const gardens = slices.map((g) => {
         const reg = byCode.get(g.id);
