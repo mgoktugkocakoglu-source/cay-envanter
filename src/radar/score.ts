@@ -71,6 +71,10 @@ export interface RadarResult {
     zCoh?: number | null;
     cohClass?: RadarClass;
     passes: PassResult[];
+    /** Why the class is no_data: the optical record never got a change date, or too few passes bracket it. */
+    reason?: 'no_change_date' | 'few_observations';
+    /** Which change window the passes were compared around: the scan record's own or the fusion verdict's. */
+    windowSource?: 'scan' | 'fusion';
 }
 
 export interface RelativeSeries {
@@ -208,10 +212,10 @@ function judgePass(s: RelativeSeries, lastNoChangeAt: string | null, firstChange
 
 /** Combines the passes (weighted by observation count) and classifies the radar evidence. */
 export function scoreEvent(passes: RelativeSeries[], lastNoChangeAt: string | null, firstChangeAt: string | null): RadarResult {
-    const empty = (passes: PassResult[]): RadarResult => ({ class: 'no_data', score: 0, vhDropDb: null, ratioDropDb: null, cohRise: null, persistence: null, z: null, passes });
-    if (!firstChangeAt) return empty([]);
+    const empty = (passes: PassResult[], reason: RadarResult['reason']): RadarResult => ({ class: 'no_data', score: 0, vhDropDb: null, ratioDropDb: null, cohRise: null, persistence: null, z: null, passes, reason });
+    if (!firstChangeAt) return empty([], 'no_change_date');
     const results = passes.map((s) => judgePass(s, lastNoChangeAt, firstChangeAt));
-    return combine(results, RADAR_RULES.minObs, RADAR_RULES.zConfirm, RADAR_RULES.persistence) ?? empty(results);
+    return combine(results, RADAR_RULES.minObs, RADAR_RULES.zConfirm, RADAR_RULES.persistence) ?? empty(results, 'few_observations');
 }
 
 /** Pools the passes (independent looks at the same ground) and classifies the evidence. */

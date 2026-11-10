@@ -117,14 +117,29 @@ async function main(): Promise<void> {
     }
     const seriesOf = (id: string): RelativeSeries[] => relative.map((r) => r[id]).filter((s): s is RelativeSeries => !!s);
 
+    // Scan records the feed never dated (change seen only in the season-end comparison) borrow the
+    // change window of the multi-sensor verdict when one exists from an earlier fuse-pruning run;
+    // the fusion stage is re-run after this one anyway, so the window is never stale by more than a run.
+    const fusionPath = join(store.dir, 'pruning-fusion', `season-${windows.season}.json`);
+    const fusionWindow = new Map<string, { lastBeforeAt: string | null; firstAfterAt: string | null }>();
+    if (existsSync(fusionPath)) {
+        const fusion = JSON.parse(readFileSync(fusionPath, 'utf8')) as { gardens: Array<{ id: string; verdict: { class: string; lastBeforeAt: string | null; firstAfterAt: string | null } }> };
+        for (const g of fusion.gardens) if (g.verdict.firstAfterAt && g.verdict.class !== 'no_data') fusionWindow.set(g.id, { lastBeforeAt: g.verdict.lastBeforeAt, firstAfterAt: g.verdict.firstAfterAt });
+    }
     const records: RadarSeasonFile['records'] = [];
     const counts: Record<string, number> = {};
+    let borrowed = 0;
     for (const e of scan.events) {
-        const radar = scoreEvent(seriesOf(e.gardenId), e.lastNoChangeAt, e.firstChangeAt);
+        const fw = !e.firstChangeAt ? fusionWindow.get(e.gardenId) : undefined;
+        const radar = fw
+            ? { ...scoreEvent(seriesOf(e.gardenId), fw.lastBeforeAt, fw.firstAfterAt), windowSource: 'fusion' as const }
+            : { ...scoreEvent(seriesOf(e.gardenId), e.lastNoChangeAt, e.firstChangeAt), windowSource: 'scan' as const };
+        if (fw) borrowed++;
         counts[radar.class] = (counts[radar.class] ?? 0) + 1;
         // Record ids follow the site: one event per garden per season.
         records.push({ recordId: `${e.gardenId}:${windows.season}:1`, gardenId: e.gardenId, radar });
     }
+    if (borrowed > 0) console.log(`${borrowed} tarihsiz kayıt füzyon değişim penceresiyle puanlandı`);
     const withEvent = new Set(scan.events.map((e) => e.gardenId));
     const radarOnly: RadarSeasonFile['radarOnly'] = [];
     for (const g of gardens) {
