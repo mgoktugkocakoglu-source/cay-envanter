@@ -211,7 +211,7 @@ const RULES = {
     /** Same screening as fusion v2.1: a date whose reference NDVI falls below this is a neighbourhood-wide collapse (snow, frost, terrain shadow), dropped for every unit. */
     collapseNdvi: 0.65,
     /** Undated scan: every scene of the season is a candidate change date, so the per-pixel bar is higher (multiple testing) and a lone weak pixel is not an event. */
-    scanZ: 3.0,
+    scanZ: 2.5,
     scanMinClusterPixels: 2,
     scanLonePixelZ: 4.0,
 };
