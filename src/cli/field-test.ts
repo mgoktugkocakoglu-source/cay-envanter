@@ -26,8 +26,9 @@ Budama tespit zincirine (scan-producers / radar / fuse) dokunmaz; çıktı: fiel
 `;
 
 // ── Inputs ──
-interface GroundTruthPolygon { kind: 'polygon'; geometry: Poly; approximate?: boolean; note?: string }
-interface GroundTruthTip { kind: 'tip'; side: 'west' | 'east' | 'north' | 'south'; radiusM: number; approximate?: boolean; note?: string }
+/** `measuredAreaM2`: the cut area measured or estimated in the field — calibrates the pruned-pixel NDVI end member (never the detection itself). */
+interface GroundTruthPolygon { kind: 'polygon'; geometry: Poly; approximate?: boolean; note?: string; measuredAreaM2?: number }
+interface GroundTruthTip { kind: 'tip'; side: 'west' | 'east' | 'north' | 'south'; radiusM: number; approximate?: boolean; note?: string; measuredAreaM2?: number }
 
 interface FieldCase {
     id: string;
@@ -140,7 +141,9 @@ export interface FieldTestResult {
         optical: { dates: string[]; clusters: Record<number, Array<number | null>>; rest: Array<number | null>; parcel: Array<number | null>; neighbours: Array<number | null> };
         radar: Array<{ pass: OrbitPass; relativeOrbit: number; dates: string[]; clusters: Record<number, Array<number | null>>; rest: Array<number | null> }>;
     };
-    groundTruth: { geometry: Poly; areaM2: number; approximate: boolean; note: string | null; comparison: GroundTruthComparison } | null;
+    groundTruth: { geometry: Poly; areaM2: number; approximate: boolean; note: string | null; measuredAreaM2: number | null; comparison: GroundTruthComparison } | null;
+    /** The pruned-pixel NDVI end member used for the area estimate: the default, or solved from a field-measured area. */
+    calibration: { ndviPruned: number; range: [number, number]; source: 'default' | 'field'; measuredAreaM2: number | null; note: string };
 }
 
 export interface FieldTestsFile {
@@ -564,6 +567,36 @@ async function runCase(ee: EE, store: NeighborhoodStore, c: FieldCase, to: strin
             cluster: null,
         };
     });
+    // Calibration: the field's measured area pins the pruned-pixel NDVI end member (flagging does not depend on it).
+    const measured = c.groundTruth?.measuredAreaM2 ?? null;
+    const sizeAt = (ndviPruned: number) =>
+        pixels.filter((p) => p.flagged).reduce((sum, p) => {
+            const span = p.optical.ndviBeforeAbs !== null ? Math.max(0.15, p.optical.ndviBeforeAbs - ndviPruned) : null;
+            return sum + (span === null ? 0 : Math.min(1, Math.max(0, -(p.optical.ndvi.delta as number) / span)) * p.insideM2);
+        }, 0);
+    let calibration: FieldTestResult['calibration'] = { ndviPruned: RULES.ndviPruned, range: RULES.ndviPrunedRange, source: 'default', measuredAreaM2: null, note: `Varsayılan uç değer (budanmış çay örtüsü NDVI ${RULES.ndviPruned}); saha ölçümü yok.` };
+    if (measured !== null && pixels.some((p) => p.flagged)) {
+        // sizeAt() rises with the end member; bisect it between bare soil and the pixels' own pre-cut level.
+        let lo = 0;
+        let hi = Math.min(...pixels.filter((p) => p.flagged).map((p) => p.optical.ndviBeforeAbs ?? 0.9)) - 0.15;
+        if (sizeAt(hi) < measured) calibration = { ndviPruned: r3(hi), range: [r3(hi - 0.1), r3(hi)], source: 'field', measuredAreaM2: measured, note: `Saha ölçümü (${measured} m²) tespit edilen piksellerin tamamından (${Math.round(sizeAt(hi))} m²) büyük: uç değer üst sınırda; kesim bayraklanan piksellerin dışına taşıyor olabilir.` };
+        else {
+            for (let i = 0; i < 40; i++) {
+                const mid = (lo + hi) / 2;
+                if (sizeAt(mid) < measured) lo = mid;
+                else hi = mid;
+            }
+            const solved = r3((lo + hi) / 2);
+            calibration = { ndviPruned: solved, range: [r3(solved - 0.1), r3(solved + 0.1)], source: 'field', measuredAreaM2: measured, note: `Uç değer saha ölçümünden çözüldü (n=1 vaka, ${measured} m²): tam budanmış piksel NDVI'si ${solved}. Bu vakada alan kıyası bağımsız değildir; konum ve tarih kıyası bağımsızdır.` };
+        }
+        for (const p of pixels) {
+            if (!p.flagged) continue;
+            const span = p.optical.ndviBeforeAbs !== null ? Math.max(0.15, p.optical.ndviBeforeAbs - calibration.ndviPruned) : null;
+            p.fraction = span === null ? null : r3(Math.min(1, Math.max(0, -(p.optical.ndvi.delta as number) / span)));
+            p.prunedM2 = p.fraction === null ? null : Math.round(p.fraction * p.insideM2);
+        }
+    }
+    console.log(`  kalibrasyon: ${calibration.note}`);
     const byId = new Map(pixels.map((p) => [p.id, p]));
     const groups = clusterCells(grid.filter((g) => (byId.get(g.id) as PixelResult).flagged));
     const pendingShare = pixels.filter((p) => p.optical.ndvi.nAfter < RULES.minAfter).length / Math.max(1, pixels.length);
@@ -614,7 +647,7 @@ async function runCase(ee: EE, store: NeighborhoodStore, c: FieldCase, to: strin
             index,
             pixelIds: ids,
             areaM2: Math.round(areaM2),
-            areaRange: [Math.round(Math.min(areaAt(RULES.ndviPrunedRange[0]), areaAt(RULES.ndviPrunedRange[1]))), Math.round(Math.max(areaAt(RULES.ndviPrunedRange[0]), areaAt(RULES.ndviPrunedRange[1])))],
+            areaRange: [Math.round(Math.min(areaAt(calibration.range[0]), areaAt(calibration.range[1]))), Math.round(Math.max(areaAt(calibration.range[0]), areaAt(calibration.range[1])))],
             areaUpperM2,
             shareOfParcel: r3(areaM2 / parcelAreaM2),
             centroid: [r6(cx), r6(cy)],
@@ -651,7 +684,9 @@ async function runCase(ee: EE, store: NeighborhoodStore, c: FieldCase, to: strin
             .map(([pass, t]) => `${pass === 'ASCENDING' ? 'çıkış' : 'iniş'} yörüngesi VH ${(t.vh.delta as number) > 0 ? '+' : ''}${t.vh.delta} dB (z ${t.vh.z}), VH/VV ${(t.ratio.delta ?? 0) > 0 ? '+' : ''}${t.ratio.delta ?? '—'} dB`);
         summary.push(`Dayanak: ${main.pixelIds.length} Sentinel-2 pikselinde komşu çay örtüsüne göreli NDVI ortalama ${main.meanDelta} düştü (en güçlü z ${main.maxZ}); radar ${main.radarChange ? 'kesim tarihiyle örtüşen değişim görüyor' : 'anlamlı değişim görmedi'}${radarBits.length ? ` — ${radarBits.join(', ')}` : ''}.`);
         for (const k of ordered.slice(1)) summary.push(`Ayrıca parselin ${k.position}: ${k.pixelIds.length} pikselde değişim, tahmini ${k.areaM2} m² (güven ${confLabel[k.confidence]}${k.note ? `; ${k.note}` : ''}).`);
-        summary.push(`Alan tahmini, her pikseldeki göreli NDVI düşüşünün budanmış çay örtüsü için varsayılan NDVI (${RULES.ndviPruned}) ile oranlanmasına dayanır; tam piksel üst sınırı ${counted.reduce((s, k) => s + k.areaUpperM2, 0)} m². Saha ölçümü ile kalibre edildikçe aralık daralır.`);
+        summary.push(calibration.source === 'field'
+            ? `Alan tahmini, her pikseldeki göreli NDVI düşüşünün tam budanmış piksel NDVI'si (${calibration.ndviPruned}, saha ölçümüyle kalibre, n=1) ile oranlanmasına dayanır; tam piksel üst sınırı ${counted.reduce((s, k) => s + k.areaUpperM2, 0)} m². Kalibrasyon bu vakanın saha ölçümünden geldiği için alan kıyası bağımsız değildir; konum ve tarih uydunun kendi bulgusudur.`
+            : `Alan tahmini, her pikseldeki göreli NDVI düşüşünün budanmış çay örtüsü için varsayılan NDVI (${calibration.ndviPruned}) ile oranlanmasına dayanır; tam piksel üst sınırı ${counted.reduce((s, k) => s + k.areaUpperM2, 0)} m². Saha ölçümü ile kalibre edildikçe aralık daralır.`);
     } else if (verdict === 'pending') {
         summary.push(`${fmtTr(c.prunedAt)} sonrası henüz yeterli temiz Sentinel-2 sahnesi yok (piksellerin %${Math.round(pendingShare * 100)}'inde ${RULES.minAfter}'den az gözlem); test yeni sahnelerle kendiliğinden güncellenir.`);
     } else {
@@ -714,7 +749,7 @@ async function runCase(ee: EE, store: NeighborhoodStore, c: FieldCase, to: strin
                       : cv.verdict === 'partial'
                         ? `Kısmi örtüşme: tespit edilen alanın %${Math.round(detectedInsideShare * 100)}'i işaretli alan içinde; ana küme ile işaret arasında ${centroidDistanceM} m.`
                         : `Tespit saha işaretiyle örtüşmüyor: ana küme işaretten ${centroidDistanceM} m uzakta.`;
-            groundTruth = { geometry: gtF.geometry, areaM2: Math.round(gtArea), approximate: c.groundTruth.approximate ?? c.groundTruth.kind === 'tip', note: c.groundTruth.note ?? null, comparison: cv };
+            groundTruth = { geometry: gtF.geometry, areaM2: Math.round(gtArea), approximate: c.groundTruth.approximate ?? c.groundTruth.kind === 'tip', note: c.groundTruth.note ?? null, measuredAreaM2: measured, comparison: cv };
             console.log(`  saha kıyası: ${cv.verdict} — ${cv.text}`);
         }
     }
@@ -741,6 +776,7 @@ async function runCase(ee: EE, store: NeighborhoodStore, c: FieldCase, to: strin
         detection: { verdict, prunedM2, prunedRange, shareOfParcel: r3(prunedM2 / parcelAreaM2), mainCluster: main?.index ?? null, dateBracket: main?.dateBracket ?? null, summary },
         series: { optical: { dates, clusters: clusterSeries, rest: restSeries, parcel: parcelRel, neighbours: nb.ndvi }, radar: radarOut },
         groundTruth,
+        calibration,
     };
 }
 
