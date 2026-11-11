@@ -144,6 +144,38 @@ export interface FieldTestResult {
     groundTruth: { geometry: Poly; areaM2: number; approximate: boolean; note: string | null; measuredAreaM2: number | null; comparison: GroundTruthComparison } | null;
     /** The pruned-pixel NDVI end member used for the area estimate: the default, or solved from a field-measured area. */
     calibration: { ndviPruned: number; range: [number, number]; source: 'default' | 'field'; measuredAreaM2: number | null; note: string };
+    undated: UndatedResult;
+}
+
+/** The same parcel judged WITHOUT the field date: the season is scanned for the strongest step, then compared with the truth. */
+export interface UndatedResult {
+    scan: { from: string; to: string; candidates: number; zThreshold: number };
+    verdict: 'detected' | 'not_detected';
+    bestDate: string | null;
+    dateBracket: { lastBefore: string | null; firstAfter: string | null };
+    /** Strongest candidate change dates, best first (score = summed z of the leading cluster). */
+    candidates: Array<{ date: string; lastBefore: string | null; flagged: number; clusterPixels: number; score: number }>;
+    pixels: Array<{ id: string; delta: number | null; z: number | null; nBefore: number; nAfter: number; flagged: boolean; strong: boolean; fraction: number | null; prunedM2: number | null; cluster: number | null }>;
+    clusters: Array<{
+        index: number;
+        pixelIds: string[];
+        areaM2: number;
+        areaUpperM2: number;
+        centroid: [number, number];
+        position: string;
+        meanDelta: number;
+        maxZ: number;
+        edgeShare: number;
+        confidence: Confidence;
+        radar: Partial<Record<OrbitPass, StepTest>>;
+        radarChange: boolean;
+    }>;
+    prunedM2: number;
+    shareOfParcel: number;
+    mainCluster: number | null;
+    summary: string[];
+    /** Filled only after the detection: does the found date bracket contain the field date, does the place match the mark. */
+    evaluation: { dateHit: boolean | null; dateErrorDays: number | null; location: GroundTruthComparison | null; text: string } | null;
 }
 
 export interface FieldTestsFile {
@@ -178,6 +210,10 @@ const RULES = {
     windowBeforeDays: 120,
     /** Same screening as fusion v2.1: a date whose reference NDVI falls below this is a neighbourhood-wide collapse (snow, frost, terrain shadow), dropped for every unit. */
     collapseNdvi: 0.65,
+    /** Undated scan: every scene of the season is a candidate change date, so the per-pixel bar is higher (multiple testing) and a lone weak pixel is not an event. */
+    scanZ: 3.0,
+    scanMinClusterPixels: 2,
+    scanLonePixelZ: 4.0,
 };
 
 const DAY = 86_400_000;
@@ -466,7 +502,9 @@ async function runCase(ee: EE, store: NeighborhoodStore, c: FieldCase, to: strin
     const [neighboursGeom, neighboursArea] = await Promise.all([evaluate<Poly>(neighboursEe), evaluate<number>(neighboursEe.area(1))]);
     if (neighboursArea < 2000) throw new Error(`Parselin ${RULES.referenceBufferM} m çevresinde yeterli çay örtüsü yok (${Math.round(neighboursArea)} m²); referans kurulamadı.`);
 
-    const from = addDays(c.prunedAt, -RULES.windowBeforeDays);
+    const seasonYear = Number(to.slice(5, 7)) >= 9 ? Number(to.slice(0, 4)) : Number(to.slice(0, 4)) - 1;
+    const scanFrom = `${seasonYear}-09-01`;
+    const from = [addDays(c.prunedAt, -RULES.windowBeforeDays), addDays(scanFrom, -RULES.beforeDays)].sort()[0] as string;
     const before: [string, string] = [addDays(c.prunedAt, -RULES.beforeDays), c.prunedAt];
     const after: [string, string] = [addDays(c.prunedAt, 1), addDays(to, 1)];
 
@@ -754,6 +792,136 @@ async function runCase(ee: EE, store: NeighborhoodStore, c: FieldCase, to: strin
         }
     }
 
+    // ── Undated blind test: the field date is not used below until the evaluation at the very end ──
+    const afterEnd = addDays(to, 1);
+    const testsAt = (d: string) =>
+        new Map(grid.map((g) => [g.id, stepTest(dates, (rel.get(g.id) as { ndvi: Array<number | null> }).ndvi, [addDays(d, -RULES.beforeDays), d], [d, afterEnd], RULES.noiseFloor)]));
+    const flaggedAt = (tests: Map<string, StepTest>) =>
+        grid.filter((g) => {
+            const t = tests.get(g.id) as StepTest;
+            return t.nBefore >= RULES.minBefore && t.nAfter >= RULES.minAfter && t.delta !== null && t.delta <= -RULES.pixelDrop && (t.z ?? 0) >= RULES.scanZ;
+        });
+    const validGroup = (group: Cell[], tests: Map<string, StepTest>) =>
+        group.length >= RULES.scanMinClusterPixels || group.some((g) => ((tests.get(g.id) as StepTest).delta as number) <= -RULES.pixelDropStrong && ((tests.get(g.id) as StepTest).z ?? 0) >= RULES.scanLonePixelZ);
+    const validRef = dates.filter((d, i) => nb.ndvi[i] !== null && nb.ndvi[i] !== undefined);
+    const scanDates = validRef.filter((d) => d >= scanFrom);
+    const scored = scanDates.map((d) => {
+        const tests = testsAt(d);
+        const flaggedCells = flaggedAt(tests);
+        const groups = clusterCells(flaggedCells).filter((g) => validGroup(g, tests));
+        const scoreOf = (g: Cell[]) => g.reduce((sum, x) => sum + ((tests.get(x.id) as StepTest).z ?? 0), 0);
+        const lead = [...groups].sort((a, b) => scoreOf(b) - scoreOf(a))[0];
+        return { date: d, lastBefore: validRef.filter((x) => x < d).at(-1) ?? null, flagged: flaggedCells.length, clusterPixels: lead?.length ?? 0, score: lead ? r3(scoreOf(lead)) : 0 };
+    });
+    const ranked = [...scored].sort((a, b) => b.score - a.score);
+    const best = ranked[0] && ranked[0].score > 0 ? ranked[0] : null;
+    const uPixels: UndatedResult['pixels'] = [];
+    const uClusters: UndatedResult['clusters'] = [];
+    const uSummary: string[] = [];
+    let uMain: UndatedResult['clusters'][number] | null = null;
+    let uPruned = 0;
+    if (best) {
+        const tests = testsAt(best.date);
+        const uBefore: [string, string] = [addDays(best.date, -RULES.beforeDays), best.date];
+        const uAfter: [string, string] = [best.date, afterEnd];
+        const groups = clusterCells(flaggedAt(tests)).filter((g) => validGroup(g, tests));
+        const clusterOf = new Map<string, number>();
+        groups.forEach((g, i) => g.forEach((x) => clusterOf.set(x.id, i)));
+        for (const g of grid) {
+            const t = tests.get(g.id) as StepTest;
+            const k = clusterOf.get(g.id) ?? null;
+            const s0 = series[g.id] as UnitSeries;
+            const absBefore = mean(dates.map((d, i) => (d >= uBefore[0] && d < uBefore[1] ? s0.ndvi[i] : null)).filter((v): v is number => v !== null && v !== undefined));
+            const span = absBefore !== null ? Math.max(0.15, absBefore - calibration.ndviPruned) : null;
+            const fraction = k !== null && span !== null ? r3(Math.min(1, Math.max(0, -(t.delta as number) / span))) : null;
+            uPixels.push({ id: g.id, delta: t.delta, z: t.z, nBefore: t.nBefore, nAfter: t.nAfter, flagged: k !== null, strong: k !== null && (t.delta as number) <= -RULES.pixelDropStrong, fraction, prunedM2: fraction === null ? null : Math.round(fraction * g.insideM2), cluster: k });
+        }
+        const uById = new Map(uPixels.map((x) => [x.id, x]));
+        groups.forEach((g, index) => {
+            const px = g.map((x) => uById.get(x.id) as UndatedResult['pixels'][number]);
+            const w = px.map((x) => x.prunedM2 ?? 1);
+            const wsum = w.reduce((a, b) => a + b, 0) || 1;
+            const centres = g.map((x) => centreOf(byId.get(x.id) as PixelResult));
+            const cx = centres.reduce((sum, ctr, i) => sum + ctr[0] * (w[i] as number), 0) / wsum;
+            const cy = centres.reduce((sum, ctr, i) => sum + ctr[1] * (w[i] as number), 0) / wsum;
+            const edgeShare = r3(g.filter((x) => x.insideShare < RULES.edgeInsideShare).length / g.length);
+            const radar: Partial<Record<OrbitPass, StepTest>> = {};
+            let radarChange = false;
+            for (const rp of radarPasses) {
+                const t = stepTest(rp.dates, meanSeries(g.map((x) => rp.vh[x.id] ?? [])), uBefore, uAfter, RULES.radarFloorDb);
+                radar[rp.pass] = t;
+                if (t.delta !== null && Math.abs(t.delta) >= RULES.radarChangeDb && Math.abs(t.z ?? 0) >= RULES.radarZ) radarChange = true;
+            }
+            const maxZ = Math.max(...px.map((x) => x.z ?? 0));
+            uClusters.push({
+                index,
+                pixelIds: g.map((x) => x.id),
+                areaM2: px.reduce((sum, x) => sum + (x.prunedM2 ?? 0), 0),
+                areaUpperM2: g.reduce((sum, x) => sum + x.insideM2, 0),
+                centroid: [r6(cx), r6(cy)],
+                position: describePosition(parcelCentre, parcelAreaM2, [cx, cy], edgeShare > 0),
+                meanDelta: r3(mean(px.map((x) => x.delta as number)) as number),
+                maxZ: r3(maxZ),
+                edgeShare,
+                confidence: confidenceOf(px.filter((x) => x.strong).length, maxZ, edgeShare, radarChange),
+                radar,
+                radarChange,
+            });
+        });
+        const uRank: Record<Confidence, number> = { high: 0, medium: 1, low: 2 };
+        uMain = [...uClusters].sort((a, b) => uRank[a.confidence] - uRank[b.confidence] || b.areaM2 - a.areaM2)[0] ?? null;
+        uPruned = uClusters.filter((k) => k.confidence !== 'low').reduce((sum, k) => sum + k.areaM2, 0);
+    }
+    const uDetected = uMain !== null && uMain.confidence !== 'low';
+    const confTr: Record<Confidence, string> = { high: 'yüksek', medium: 'orta', low: 'düşük' };
+    if (uDetected && best && uMain) {
+        uSummary.push(`Tarih verilmeden: uydu bu parselde ${best.lastBefore ? fmtTr(best.lastBefore) : '—'} – ${fmtTr(best.date)} arasında bir kesim görüyor; yaklaşık ${uPruned} m² (parselin %${Math.round((uPruned / parcelAreaM2) * 100)}'i), konum parselin ${uMain.position}, güven ${confTr[uMain.confidence]}.`);
+        uSummary.push(`Dayanak: sezonun ${scanDates.length} sahnesi aday değişim tarihi olarak tarandı (${fmtTr(scanFrom)} → ${fmtTr(to)}); en güçlü basamak ${fmtTr(best.date)} sahnesinde: ${uMain.pixelIds.length} komşu pikselde göreli NDVI ortalama ${uMain.meanDelta} (en güçlü z ${uMain.maxZ}, küme skoru ${best.score}). Tarama eşiği z ≥ ${RULES.scanZ} (tarihli testte ${RULES.pixelZ}).`);
+        const runner = ranked[1];
+        if (runner && runner.score > 0) uSummary.push(`İkinci aday: ${fmtTr(runner.date)} (skor ${runner.score}, ${runner.clusterPixels} piksel)${runner.score < best.score * 0.7 ? ' — belirgin biçimde zayıf.' : ' — birinciye yakın; tarih belirsizliği var.'}`);
+    } else {
+        uSummary.push(`Tarih verilmeden: sezon taramasında (${fmtTr(scanFrom)} → ${fmtTr(to)}, ${scanDates.length} sahne) bu parselde kesim büyüklüğünde, kümelenmiş bir NDVI basamağı bulunamadı (eşik: düşüş ≥ ${RULES.pixelDrop}, z ≥ ${RULES.scanZ}, en az ${RULES.scanMinClusterPixels} komşu piksel).`);
+    }
+    // Evaluation against the field truth — the first and only use of the field date and mark in this block.
+    let uEvaluation: UndatedResult['evaluation'] = null;
+    {
+        const dateHit = uDetected && best ? (best.lastBefore ?? '0000') < c.prunedAt && c.prunedAt <= best.date : uDetected ? null : false;
+        const dateErrorDays = uDetected && best ? (dateHit ? 0 : Math.round(Math.min(Math.abs(Date.parse(best.date) - Date.parse(c.prunedAt)), Math.abs(Date.parse(best.lastBefore ?? best.date) - Date.parse(c.prunedAt))) / DAY)) : null;
+        let location: GroundTruthComparison | null = null;
+        const gtU = groundTruth ? feature(groundTruth.geometry) : null;
+        if (gtU && uDetected && uMain) {
+            const parts = uPixels.filter((x) => x.flagged && x.cluster !== null && (uClusters[x.cluster] as UndatedResult['clusters'][number]).confidence !== 'low').map((x) => (grid.find((g) => g.id === x.id) as Cell).inside);
+            const detF = parts.length === 1 ? (parts[0] as Feature<Poly>) : parts.length > 1 ? (union(featureCollection(parts)) as Feature<Poly> | null) : null;
+            const gtArea = turfArea(gtU);
+            const detectedM2 = detF ? turfArea(detF) : 0;
+            const ov = detF ? intersect(featureCollection([detF, gtU])) : null;
+            const overlapM2 = ov ? turfArea(ov) : 0;
+            const dist = Math.round(distance(centroid(gtU).geometry.coordinates as [number, number], uMain.centroid, { units: 'meters' }));
+            const inside = overlapM2 > 0 && dist <= Math.sqrt(gtArea / Math.PI) + 7;
+            const insideShare = detectedM2 > 0 ? r3(overlapM2 / detectedM2) : 0;
+            location = { detectedM2: Math.round(detectedM2), overlapM2: Math.round(overlapM2), detectedInsideShare: insideShare, groundTruthCoveredShare: r3(overlapM2 / gtArea), centroidDistanceM: dist, mainClusterInside: inside, verdict: inside || insideShare >= 0.5 ? 'match' : overlapM2 > 0 ? 'partial' : 'miss', text: '' };
+        }
+        const dateText = !uDetected ? `Uydu tarihsiz taramada kesim bulamadı; sahada ${fmtTr(c.prunedAt)} tarihinde kesim bildirildi: kaçırıldı.` : dateHit ? `Tarih: saha tarihi (${fmtTr(c.prunedAt)}) uydunun bulduğu aralığın içinde.` : `Tarih: saha tarihi (${fmtTr(c.prunedAt)}) uydunun bulduğu aralığın dışında (${dateErrorDays} gün sapma).`;
+        const locText = location ? (location.verdict === 'match' ? ` Konum: saha işaretiyle örtüşüyor (merkezler arası ${location.centroidDistanceM} m, tespitin %${Math.round(location.detectedInsideShare * 100)}'i işaret içinde).` : location.verdict === 'partial' ? ` Konum: kısmi örtüşme (merkezler arası ${location.centroidDistanceM} m).` : ` Konum: saha işaretiyle örtüşmüyor (${location.centroidDistanceM} m).`) : '';
+        uEvaluation = { dateHit, dateErrorDays, location, text: dateText + locText };
+    }
+    for (const line of uSummary) console.log(`  ◦ ${line}`);
+    console.log(`  ◦ tarihsiz kıyas: ${uEvaluation.text}`);
+    const undated: UndatedResult = {
+        scan: { from: scanFrom, to, candidates: scanDates.length, zThreshold: RULES.scanZ },
+        verdict: uDetected ? 'detected' : 'not_detected',
+        bestDate: uDetected && best ? best.date : null,
+        dateBracket: { lastBefore: uDetected && best ? best.lastBefore : null, firstAfter: uDetected && best ? best.date : null },
+        candidates: ranked.filter((x) => x.score > 0).slice(0, 5),
+        pixels: uPixels,
+        clusters: uClusters,
+        prunedM2: uDetected ? uPruned : 0,
+        shareOfParcel: uDetected ? r3(uPruned / parcelAreaM2) : 0,
+        mainCluster: uDetected && uMain ? uMain.index : null,
+        summary: uSummary,
+        evaluation: uEvaluation,
+    };
+
     return {
         id: c.id,
         block: c.block,
@@ -777,6 +945,7 @@ async function runCase(ee: EE, store: NeighborhoodStore, c: FieldCase, to: strin
         series: { optical: { dates, clusters: clusterSeries, rest: restSeries, parcel: parcelRel, neighbours: nb.ndvi }, radar: radarOut },
         groundTruth,
         calibration,
+        undated,
     };
 }
 
