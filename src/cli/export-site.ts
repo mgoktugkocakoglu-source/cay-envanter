@@ -15,6 +15,7 @@ import { loadHealthForBundle } from '../health/bundle.ts';
 import { loadLandForBundle } from '../land/bundle.ts';
 import { loadAgeForBundle } from '../age/bundle.ts';
 import { loadFieldTestsForBundle } from '../pruning/field-tests-bundle.ts';
+import { loadPixelScanForBundle } from '../pruning/pixel-scan-bundle.ts';
 
 /**
  * Packs one neighborhood's inventory into a single JSON bundle for the cayhesabim site
@@ -192,6 +193,8 @@ function main(): void {
         age: loadAgeForBundle(store.dir),
         // Optional: inspector ground truth with the independent satellite step test of each claim (field-test).
         fieldTests: loadFieldTestsForBundle(store.dir, roundCoords),
+        // Optional: lattice-level undated pruning scan per garden (scan-pixels; separate from the fusion verdicts).
+        pixelScan: loadPixelScanForBundle(store.dir),
         licensing: {
             demo: true,
             generatedAt: registry.generatedAt,
