@@ -57,7 +57,16 @@ export interface StepTest {
     z: number | null;
 }
 
-export type ClaimVerdict = 'supports' | 'contradicts' | 'unclear' | 'pending';
+export type ClaimVerdict = 'supports' | 'likely' | 'contradicts' | 'unclear' | 'pending';
+
+/** Per-pixel relative NDVI change (after − before, minus the surrounding tea's own shift) on Sentinel-2's grid. */
+export interface PixelChange {
+    before: [string, string];
+    after: [string, string];
+    reference: { before: number | null; after: number | null };
+    epsg: string;
+    pixels: Array<{ lon: number; lat: number; before: number | null; after: number | null; delta: number | null; nBefore: number; nAfter: number }>;
+}
 
 export interface FieldTestResult {
     id: string;
@@ -71,6 +80,8 @@ export interface FieldTestResult {
     spot: { geometry: Poly; areaM2: number; approximate: boolean; description: string };
     pixels: Record<UnitId, number>;
     window: [string, string];
+    /** Pixel map of the first "pruned" claim's windows (null when the case has none). */
+    pixelChange: PixelChange | null;
     series: {
         optical: { dates: string[]; units: Record<UnitId, { ndvi: Array<number | null>; nbr: Array<number | null>; clearShare: Array<number | null> }> };
         radar: Array<{ pass: OrbitPass; relativeOrbit: number; dates: string[]; units: Record<UnitId, { vh: Array<number | null>; vv: Array<number | null> }> }>;
@@ -165,21 +176,28 @@ function neighbourTea(ee: EE, storeDir: string, parcelEe: EE, bufferM: number): 
     return patches.filterBounds(parcelEe.buffer(bufferM)).geometry().intersection(parcelEe.buffer(bufferM), 1).difference(parcelEe.buffer(5), 1);
 }
 
-async function opticalRows(ee: EE, fc: EE, from: string, to: string): Promise<OpticalRow[]> {
+/** Clear, snow-free Sentinel-2 scenes as NDVI + NBR images (Cloud Score+ ≥ 0.6, NDSI < 0.4, SCL ≠ snow). */
+function s2Clean(ee: EE, region: EE, from: string, to: string): EE {
     const cloudScore = ee.ImageCollection('GOOGLE/CLOUD_SCORE_PLUS/V1/S2_HARMONIZED');
-    const col = ee
+    return ee
         .ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
-        .filterBounds(fc.geometry().bounds())
+        .filterBounds(region)
         .filterDate(from, to)
         .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 80))
         .linkCollection(cloudScore, ['cs_cdf'])
-        .sort('system:time_start');
-    const perImage = col
+        .sort('system:time_start')
         .map((image: EE) => {
             const scaled = image.select(['B3', 'B4', 'B8', 'B11', 'B12']).divide(10_000);
             const clear = image.select('cs_cdf').gte(0.6).and(scaled.normalizedDifference(['B3', 'B11']).lt(0.4)).and(image.select('SCL').neq(11));
             const img = scaled.normalizedDifference(['B8', 'B4']).rename('ndvi').addBands(scaled.normalizedDifference(['B8', 'B12']).rename('nbr')).updateMask(clear);
-            const date = ee.Date(image.get('system:time_start')).format('YYYY-MM-dd');
+            return ee.Image(img.copyProperties(image, ['system:time_start', 'system:index']));
+        });
+}
+
+async function opticalRows(ee: EE, fc: EE, from: string, to: string): Promise<OpticalRow[]> {
+    const perImage = s2Clean(ee, fc.geometry().bounds(), from, to)
+        .map((img: EE) => {
+            const date = ee.Date(img.get('system:time_start')).format('YYYY-MM-dd');
             return img
                 .reduceRegions({ collection: fc, reducer: ee.Reducer.mean().combine(ee.Reducer.count(), '', true), scale: 10, tileScale: 4 })
                 .map((f: EE) => f.set('date', date));
@@ -190,6 +208,37 @@ async function opticalRows(ee: EE, fc: EE, from: string, to: string): Promise<Op
     return out.features.map(({ properties: p }) => ({ id: p.id, date: p.date, ndvi: p.ndvi_mean ?? null, nbr: p.nbr_mean ?? null, count: p.ndvi_count ?? 0 }));
 }
 
+async function pixelChangeMap(ee: EE, parcelEe: EE, neighboursEe: EE, epsg: string, before: [string, string], after: [string, string]): Promise<PixelChange> {
+    const region = parcelEe.buffer(30);
+    const colB = s2Clean(ee, region, before[0], before[1]).select('ndvi');
+    const colA = s2Clean(ee, region, after[0], after[1]).select('ndvi');
+    const b = colB.median().rename('before');
+    const a = colA.median().rename('after');
+    const ref = (img: EE, band: string) => evaluate<number | null>(img.reduceRegion({ reducer: ee.Reducer.median(), geometry: neighboursEe, scale: 10, maxPixels: 1e9 }).get(band));
+    const [refB, refA] = await Promise.all([ref(b, 'before'), ref(a, 'after')]);
+    const shift = refB !== null && refA !== null ? refA - refB : 0;
+    const stack = b
+        .addBands(a)
+        .addBands(a.subtract(b).subtract(shift).rename('delta'))
+        .addBands(colB.count().unmask(0).rename('nBefore'))
+        .addBands(colA.count().unmask(0).rename('nAfter'))
+        .addBands(ee.Image.pixelLonLat());
+    const out = await evaluate<{ features: Array<{ properties: Record<string, number | null> }> }>(
+        stack.sample({ region, scale: 10, projection: epsg, geometries: false, dropNulls: false }),
+    );
+    const r6 = (v: number) => Math.round(v * 1e6) / 1e6;
+    const num = (v: number | null | undefined) => (typeof v === 'number' ? r3(v) : null);
+    return {
+        before,
+        after,
+        reference: { before: refB === null ? null : r3(refB), after: refA === null ? null : r3(refA) },
+        epsg,
+        pixels: out.features
+            .map(({ properties: q }) => ({ lon: r6(q.longitude as number), lat: r6(q.latitude as number), before: num(q.before), after: num(q.after), delta: num(q.delta), nBefore: (q.nBefore as number) ?? 0, nAfter: (q.nAfter as number) ?? 0 }))
+            .filter((x) => Number.isFinite(x.lon) && Number.isFinite(x.lat)),
+    };
+}
+
 function judgePruned(c: FieldCase['claims'][number] & { kind: 'pruned' }, dates: string[], rel: Record<string, Array<number | null>>, radar: FieldTestResult['series']['radar'], small: boolean, to: string): FieldTestResult['claims'][number] {
     const before: [string, string] = [addDays(c.between[0], -RULES.beforeDays), c.between[0]];
     const after: [string, string] = [c.between[1], addDays(to, 1)];
@@ -198,29 +247,47 @@ function judgePruned(c: FieldCase['claims'][number] & { kind: 'pruned' }, dates:
         spotNbr: stepTest(dates, rel.spotNbr as Array<number | null>, before, after, 0.03),
         restNdvi: stepTest(dates, rel.restNdvi as Array<number | null>, before, after, 0.03),
     };
-    for (const p of radar) tests[`spotVh_${p.pass}`] = stepTest(p.dates, relative(p.units.spot.vh, p.units.neighbours.vh), before, after, 0.6);
+    for (const p of radar) {
+        tests[`spotVh_${p.pass}`] = stepTest(p.dates, relative(p.units.spot.vh, p.units.neighbours.vh), before, after, 0.6);
+        tests[`restVh_${p.pass}`] = stepTest(p.dates, relative(p.units.rest.vh, p.units.neighbours.vh), before, after, 0.6);
+    }
     const t = tests.spotNdvi as StepTest;
+    const ctrl = tests.restNdvi as StepTest;
     const drop = small ? RULES.ndviDropSmall : RULES.ndviDrop;
-    const vhAfter = radar.map((p) => tests[`spotVh_${p.pass}`] as StepTest).filter((x) => x.nAfter >= 1);
-    const vhSupports = vhAfter.some((x) => x.delta !== null && x.delta <= -RULES.vhDropDb && (x.z ?? 0) >= RULES.zStep);
-    const early = vhAfter.filter((x) => x.delta !== null && x.delta <= -RULES.vhDropDb);
+    const controlSteady = ctrl.delta === null || ctrl.delta > -drop / 2;
+    const vh = radar.map((p) => ({ pass: p.pass, spot: tests[`spotVh_${p.pass}`] as StepTest, rest: tests[`restVh_${p.pass}`] as StepTest })).filter((x) => x.spot.nAfter >= 1);
+    const vhDrop = vh.filter((x) => x.spot.delta !== null && x.spot.delta <= -RULES.vhDropDb && (x.spot.z ?? 0) >= RULES.zStep);
+    // A VH change of either sign at the spot that the rest of the parcel does not share: a cut hedge can scatter more
+    // (debris, opened rows, wet soil) as well as less, so the sign is not decisive but the timing is.
+    const vhChange = vh.filter((x) => x.spot.delta !== null && Math.abs(x.spot.delta) >= RULES.vhDropDb && Math.abs(x.spot.z ?? 0) >= RULES.zStep && (x.rest.delta === null || Math.abs(x.rest.delta) < RULES.vhDropDb / 2));
+    const passLabel = (pass: OrbitPass) => (pass === 'ASCENDING' ? 'çıkış' : 'iniş');
+    const radarNote = vhChange.length
+        ? ` Radar (${vhChange.map((x) => `${passLabel(x.pass)} yörüngesi ${(x.spot.delta as number) > 0 ? '+' : ''}${x.spot.delta} dB, z ${x.spot.z}`).join('; ')}) işaretli alanda kesim tarihiyle örtüşen bir değişim görüyor, parselin kalanında yok${vhChange.some((x) => (x.spot.delta as number) > 0) ? ' (yön artış: kesim artıkları / açılan sıralar, biçme imzasının tersi)' : ''}.`
+        : '';
+    const obs = `${t.nBefore} önce / ${t.nAfter} sonra gözlem`;
     let verdict: ClaimVerdict;
     let reason: string;
-    if (t.nAfter < RULES.minObs && vhAfter.every((x) => x.nAfter < RULES.minObs)) {
+    if (t.nAfter < RULES.minObs && vh.every((x) => x.spot.nAfter < RULES.minObs)) {
         verdict = 'pending';
-        reason = `Budama sonrası henüz ${t.nAfter} temiz optik gözlem${vhAfter.length ? ` ve en çok ${Math.max(...vhAfter.map((x) => x.nAfter))} radar geçişi` : ''} var; en az ${RULES.minObs} gerekir.${early.length ? ` İlk radar geçişi düşüş gösteriyor (VH ${early.map((x) => x.delta).join(' / ')} dB), ikinci geçişle teyit beklenir.` : ''} Yeni sahneler geldikçe test kendiliğinden güncellenir.`;
-    } else if (t.delta !== null && t.delta <= -drop && (t.z ?? 0) >= RULES.zStep) {
+        reason = `Budama sonrası henüz ${t.nAfter} temiz optik gözlem${vh.length ? ` ve en çok ${Math.max(...vh.map((x) => x.spot.nAfter))} radar geçişi` : ''} var; en az ${RULES.minObs} gerekir.${radarNote} Yeni sahneler geldikçe test kendiliğinden güncellenir.`;
+    } else if (t.delta !== null && t.delta <= -drop && (t.z ?? 0) >= RULES.zStep && controlSteady) {
         verdict = 'supports';
-        reason = `İşaretli alanın komşulara göreli NDVI'si ${t.delta} düştü (z ${t.z}, ${t.nBefore} önce / ${t.nAfter} sonra gözlem)${vhSupports ? '; radar VH düşüşü de uyumlu' : ''}.`;
-    } else if (t.nAfter >= RULES.minObsFirm && t.delta !== null && t.delta > -drop / 3) {
+        reason = `İşaretli alanın komşulara göreli NDVI'si ${t.delta} düştü (z ${t.z}, ${obs}); parselin kalanı sabit (${ctrl.delta ?? '—'}).${vhDrop.length ? ' Radar VH düşüşü de uyumlu.' : radarNote}`;
+    } else if (t.nAfter >= RULES.minObsFirm && t.delta !== null && t.delta > -drop / 3 && vhChange.length === 0) {
         verdict = 'contradicts';
-        reason = `${t.nAfter} sonra gözleme rağmen göreli NDVI düşmedi (fark ${t.delta}); uydu bu büyüklükte bir alanda kesimi görmedi.`;
-    } else if (vhSupports) {
+        reason = `${t.nAfter} sonra gözleme rağmen göreli NDVI düşmedi (fark ${t.delta}) ve radar bir değişim görmedi; uydu bu büyüklükte bir alanda kesimi görmedi.`;
+    } else if (t.delta !== null && t.delta <= -drop / 2 && (t.z ?? 0) >= RULES.zStep && controlSteady) {
+        verdict = 'likely';
+        reason = `Göreli NDVI ${t.delta} düştü (z ${t.z}, ${obs}): yön doğru, büyüklük kesin eşiğin (${-drop}) altında. İşaretli alan gerçek şeritten büyükse sinyal seyrelir; parselin kalanı sabit (${ctrl.delta ?? '—'}).${radarNote}`;
+    } else if (vhDrop.length) {
         verdict = 'supports';
-        reason = `Optik basamak eşiğin altında (fark ${t.delta ?? '—'}, z ${t.z ?? '—'}) ama radar VH düşüşü kesimi gösteriyor.`;
+        reason = `Optik basamak eşiğin altında (fark ${t.delta ?? '—'}, z ${t.z ?? '—'}) ama radar VH düşüşü kesimi gösteriyor (${vhDrop.map((x) => `${passLabel(x.pass)} ${x.spot.delta} dB`).join(', ')}).`;
+    } else if (vhChange.length && t.delta !== null && t.delta < 0) {
+        verdict = 'likely';
+        reason = `Optik düşüş zayıf (fark ${t.delta}, z ${t.z ?? '—'}, ${obs}).${radarNote}`;
     } else {
         verdict = 'unclear';
-        reason = `Göreli NDVI farkı ${t.delta ?? '—'} (z ${t.z ?? '—'}, ${t.nBefore} önce / ${t.nAfter} sonra): eşik ${-drop} / z ${RULES.zStep} henüz karşılanmadı.`;
+        reason = `Göreli NDVI farkı ${t.delta ?? '—'} (z ${t.z ?? '—'}, ${obs}): eşik ${-drop} / z ${RULES.zStep} karşılanmadı.${radarNote}`;
     }
     return { kind: 'pruned', label: c.label, dates: [...c.between], windows: { before, after }, tests, verdict, reason };
 }
@@ -329,6 +396,16 @@ async function runCase(ee: EE, store: NeighborhoodStore, c: FieldCase, from: str
     const small = spotArea <= RULES.smallUnitAreaM2;
     const claims = c.claims.map((cl) => (cl.kind === 'pruned' ? judgePruned(cl, dates, rel, radar, small, to) : judgeNotPruned(cl, dates, rel.spotNdvi, small)));
     for (const cl of claims) console.log(`  ${cl.label}: ${cl.verdict} — ${cl.reason}`);
+    // Pixel-by-pixel change map of the first pruned claim: which 10 m squares moved, and whether they are the marked ones.
+    const firstPruned = claims.find((cl) => cl.kind === 'pruned' && cl.windows);
+    let pixelChange: PixelChange | null = null;
+    if (firstPruned?.windows) {
+        const epsg = `EPSG:326${Math.floor((tipVertex(parcel, 'west')[0] + 180) / 6) + 1}`;
+        console.log('  piksel değişim haritası hesaplanıyor…');
+        pixelChange = await pixelChangeMap(ee, parcelEe, neighboursEe, epsg, firstPruned.windows.before, firstPruned.windows.after);
+        const moved = pixelChange.pixels.filter((x) => x.delta !== null && x.delta <= -0.05).length;
+        console.log(`    ${pixelChange.pixels.length} piksel, ${moved} tanesinde göreli NDVI ≤ −0.05`);
+    }
     return {
         id: c.id,
         block: c.block,
@@ -341,6 +418,7 @@ async function runCase(ee: EE, store: NeighborhoodStore, c: FieldCase, from: str
         spot: { geometry: spotGeom, areaM2: Math.round(spotArea), approximate: c.spot.approximate ?? c.spot.kind === 'tip', description },
         pixels,
         window: [from, to],
+        pixelChange,
         series: { optical, radar },
         claims,
     };
