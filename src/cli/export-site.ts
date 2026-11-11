@@ -14,6 +14,7 @@ import { loadFusionForBundle } from '../fusion/bundle.ts';
 import { loadHealthForBundle } from '../health/bundle.ts';
 import { loadLandForBundle } from '../land/bundle.ts';
 import { loadAgeForBundle } from '../age/bundle.ts';
+import { loadFieldTestsForBundle } from '../pruning/field-tests-bundle.ts';
 
 /**
  * Packs one neighborhood's inventory into a single JSON bundle for the cayhesabim site
@@ -189,6 +190,8 @@ function main(): void {
         land: loadLandForBundle(store.dir),
         // Optional: garden age, renewal and abandonment (Landsat 1984→ + Sentinel-2 activity).
         age: loadAgeForBundle(store.dir),
+        // Optional: inspector ground truth with the independent satellite step test of each claim (field-test).
+        fieldTests: loadFieldTestsForBundle(store.dir, roundCoords),
         licensing: {
             demo: true,
             generatedAt: registry.generatedAt,

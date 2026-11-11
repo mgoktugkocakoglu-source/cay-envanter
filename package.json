@@ -24,7 +24,8 @@
         "pipeline": "node src/cli/pipeline.ts",
         "neighborhoods": "node src/cli/list-neighborhoods.ts",
         "evaluate-land": "node src/cli/evaluate-land.ts",
-        "garden-age": "node src/cli/scan-garden-age.ts"
+        "garden-age": "node src/cli/scan-garden-age.ts",
+        "field-test": "node src/cli/field-test.ts"
     },
     "dependencies": {
         "@google/earthengine": "^1.7.47",
