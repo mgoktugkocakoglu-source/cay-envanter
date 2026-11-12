@@ -1,8 +1,9 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import { NeighborhoodStore } from '../library/store.ts';
 import type { FusionSeasonFile } from './fuse-pruning.ts';
+import { addDays, PixelTimeline, type RepeatCheck } from '../pruning/pixel-timeline.ts';
 
 const USAGE = `
 Kullanım:
@@ -13,6 +14,7 @@ başına tek karara indirir. İki modülün hiçbirini değiştirmez; yalnızca 
   kesin    : iki modül de aynı olayı gördü (değişim tarihleri ${45} gün içinde)
   muhtemel : yalnız biri gördü (çok-sensör budandı/olası ya da piksel taraması derin budama)
   hafif    : yalnız piksel taraması, hızlı toparlanan kesim (1/7 hesabına girmez)
+  mevsimsel: “muhtemel” olacaktı ama aynı piksellerde aynı düşüş bir önceki sezonda, aynı dönemde de var (1/7 hesabına girmez)
 Alan piksel taramasının çizdiği kümeden, o yoksa çok-sensörün alan çıktısından gelir. Radar/koherans yalnızca tanıktır.
 Çıktı: pruning-combined/season-<yyyy-yy>.json
 `;
@@ -22,9 +24,17 @@ export const COMBINED_RULES = {
     sameEventDays: 45,
     /** Radar witness: the garden's coherence rise / VH drop beyond the 90 % bar of quiet tea (block-scale radar test). */
     witnessZ: 1.2816,
+    /**
+     * Seasonal pattern: a "probable" detection whose step is also there a year earlier on the same pixels (at least this
+     * share of the drop) is the garden's yearly pattern (shadow, aspect, early flush), not a pruning. Needs only the
+     * previous season, so it is known at decision time. Confirmed detections are not touched.
+     */
+    seasonalRepeatShare: 0.6,
 };
 
-export type CombinedClass = 'confirmed' | 'probable' | 'light' | 'none' | 'no_data';
+export type CombinedClass = 'confirmed' | 'probable' | 'light' | 'seasonal' | 'none' | 'no_data';
+/** Previous-season repeat test of a detection: on the pixel cluster (against the rest of the garden) or the whole garden (against the neighbourhood). */
+export type SeasonalOf = (gardenId: string, clusterCells: Array<[number, number]> | null, lastBefore: string, date: string) => RepeatCheck | null;
 export type CombinedAgreement = 'both' | 'both_other_dates' | 'fusion_only' | 'pixel_only' | 'neither';
 
 export interface CombinedGarden {
@@ -43,6 +53,8 @@ export interface CombinedGarden {
     fusion: { class: string; kind: string | null; z: number | null; changeDate: string | null; lastBeforeAt: string | null; firstAfterAt: string | null; unit: string; unitAreaM2: number; reusedShare: number };
     pixel: { verdict: string; date: string | null; lastBefore: string | null; score: number | null; prunedM2: number; clusters: number; kind: string | null; confidence: string | null } | null;
     radar: { coherenceZ: number | null; vhZ: number | null; witness: boolean } | null;
+    /** The previous-season repeat test, run on detections that would be "probable"; `repeat` true moved it to "seasonal". */
+    seasonal: ({ unit: 'cluster' | 'garden' } & RepeatCheck) | null;
     reason: string;
 }
 
@@ -60,6 +72,7 @@ export interface CombinedProducer {
     confirmedGardens: string[];
     probableGardens: string[];
     lightGardens: string[];
+    seasonalGardens: string[];
     status: CombinedProducerStatus;
     /** The fusion module's own purchase decision, for comparison (the combined module does not open purchases). */
     fusionDecision: string | null;
@@ -71,12 +84,17 @@ export interface CombinedValidation {
     season: string;
     generatedAt: string;
     gardens: number;
-    falseAlarms: { confirmed: number; probable: number; light: number; note: string };
+    falseAlarms: { confirmed: number; probable: number; light: number; seasonal?: number; note: string };
     detection: { trials: number; note: string; rows: Array<{ key: string; overall: CombinedRate; deep: CombinedRate; light: CombinedRate; clear: CombinedRate }> };
 }
 
 export interface CombinedSeasonFile {
     season: string;
+    /** The season is still running: only the pixel scan has spoken, the multi-sensor verdict joins after the season. */
+    inProgress?: boolean;
+    dataThrough?: string | null;
+    /** Live season: detections of the pixel scan on the mirrored series so far (upper bound of the interim false alarms). */
+    liveFalseAlarms?: number | null;
     generatedAt: string;
     method: string;
     rules: typeof COMBINED_RULES & { pruningRatio: number };
@@ -85,7 +103,7 @@ export interface CombinedSeasonFile {
         gardens: number;
         byClass: Record<CombinedClass, number>;
         byAgreement: Record<CombinedAgreement, number>;
-        areaM2: { confirmed: number; probable: number; light: number; lowM2: number; highM2: number };
+        areaM2: { confirmed: number; probable: number; light: number; seasonal: number; lowM2: number; highM2: number };
         radarWitness: { confirmed: number; probable: number; light: number };
         producers: Record<CombinedProducerStatus, number>;
         /** Producers whose combined status differs from the fusion purchase decision's direction. */
@@ -105,13 +123,14 @@ interface PixelGardenLite {
     prunedUpperM2: number;
     mainCluster: number | null;
     clusters: Array<{ kind: string; confidence: string }>;
+    px?: Array<[number, number, number, number | null, number | null, number, number, number]>;
 }
 interface RadarSingle { id: string; Koherans?: { z: number } | null; VH?: { z: number } | null }
 
 const dayGap = (a: string, b: string) => Math.abs(Date.parse(a) - Date.parse(b)) / 864e5;
 const r3 = (x: number) => Math.round(x * 1000) / 1000;
 
-export function combine(fusion: FusionSeasonFile, pixelGardens: PixelGardenLite[] | null, radarSingles: RadarSingle[] | null): { gardens: CombinedGarden[]; producers: CombinedProducer[] } {
+export function combine(fusion: FusionSeasonFile, pixelGardens: PixelGardenLite[] | null, radarSingles: RadarSingle[] | null, seasonalOf: SeasonalOf | null = null, live = false): { gardens: CombinedGarden[]; producers: CombinedProducer[] } {
     const pixelById = new Map((pixelGardens ?? []).map((g) => [g.id, g]));
     const radarById = new Map((radarSingles ?? []).map((r) => [r.id, r]));
     const gardens: CombinedGarden[] = fusion.gardens.map((g) => {
@@ -144,13 +163,30 @@ export function combine(fusion: FusionSeasonFile, pixelGardens: PixelGardenLite[
             kind = light ? 'light' : 'deep';
             reason = light
                 ? `Yalnız piksel taraması gördü ve kesim hızlı toparlandı (${px!.best!.lastBefore ?? '—'} → ${px!.best!.date}, ${px!.prunedM2} m²): hafif budama, 1/7 hesabına girmez`
-                : `Yalnız piksel taraması gördü (${px!.best!.lastBefore ?? '—'} → ${px!.best!.date}, ${px!.prunedM2} m², ${px!.verdict === 'pending' ? 'toparlanma henüz izlenemedi' : 'yaz başında örtü hâlâ eksik'}); bahçe ortalaması çok-sensör eşiğinin altında kaldı`;
+                : `Yalnız piksel taraması gördü (${px!.best!.lastBefore ?? '—'} → ${px!.best!.date}, ${px!.prunedM2} m², ${px!.verdict === 'pending' ? 'toparlanma henüz izlenemedi' : 'yaz başında örtü hâlâ eksik'}); ${live ? 'sezon sürüyor, çok-sensör karar sezon sonunda eklenecek' : 'bahçe ortalaması çok-sensör eşiğinin altında kaldı'}`;
         } else if (v.class === 'no_data' && (!px || px.verdict === 'no_data')) {
             cls = 'no_data';
             reason = 'İki modülde de yeterli gözlem yok';
         } else {
             cls = 'none';
-            reason = 'İki modül de budama görmedi';
+            reason = live ? 'Şimdiye kadar budama görülmedi (sezon sürüyor)' : 'İki modül de budama görmedi';
+        }
+        // Seasonal pattern: a would-be "probable" whose step repeats a year earlier on the same pixels is not a pruning.
+        let seasonal: CombinedGarden['seasonal'] = null;
+        if (cls === 'probable' && seasonalOf) {
+            const cells = agreement !== 'fusion_only' && px && px.mainCluster !== null ? (px.px ?? []).filter((x) => x[5] > 0 && x[6] === px.mainCluster).map((x) => [x[0], x[1]] as [number, number]) : [];
+            const useCluster = cells.length > 0;
+            const date = useCluster ? px!.best!.date : (v.firstAfterAt ?? v.changeDate);
+            const before = useCluster ? (px!.best!.lastBefore ?? addDays(px!.best!.date, -15)) : (v.lastBeforeAt ?? (date ? addDays(date, -15) : null));
+            const check = date && before ? seasonalOf(g.id, useCluster ? cells : null, before, date) : null;
+            if (check) {
+                seasonal = { unit: useCluster ? 'cluster' : 'garden', ...check };
+                if (check.repeat) {
+                    cls = 'seasonal';
+                    kind = null;
+                    reason += ` · aynı ${useCluster ? 'piksellerde' : 'bahçede'} bir önceki sezonun aynı döneminde de benzer düşüş var (bu sezon ${check.drop}, önceki sezon ${check.prevStep}): mevsimsel desen, 1/7 hesabına girmez`;
+                }
+            }
         }
         // Bracket: the overlap when both saw the same event, else the one that saw it.
         let bracket: CombinedGarden['bracket'] = null;
@@ -189,6 +225,7 @@ export function combine(fusion: FusionSeasonFile, pixelGardens: PixelGardenLite[
             fusion: { class: v.class, kind: v.kind ?? null, z: v.z, changeDate: v.changeDate, lastBeforeAt: v.lastBeforeAt, firstAfterAt: v.firstAfterAt, unit: g.unit, unitAreaM2: g.unitAreaM2, reusedShare },
             pixel: px ? { verdict: px.verdict, date: px.best?.date ?? null, lastBefore: px.best?.lastBefore ?? null, score: px.best?.score ?? null, prunedM2: px.prunedM2, clusters: px.clusters.length, kind: main?.kind ?? null, confidence: main?.confidence ?? null } : null,
             radar,
+            seasonal,
             reason: reason + (radar?.witness ? ' · radar/koherans da aynı aralıkta değişim gösterdi' : ''),
         };
     });
@@ -200,6 +237,7 @@ export function combine(fusion: FusionSeasonFile, pixelGardens: PixelGardenLite[
         const confirmed = of('confirmed');
         const probable = of('probable');
         const light = of('light');
+        const seasonal = of('seasonal');
         const confirmedM2 = confirmed.reduce((s, g) => s + g.countedM2, 0);
         const probableM2 = probable.reduce((s, g) => s + g.countedM2, 0);
         const lightM2 = light.reduce((s, g) => s + (g.area?.m2 ?? 0), 0);
@@ -224,6 +262,7 @@ export function combine(fusion: FusionSeasonFile, pixelGardens: PixelGardenLite[
             confirmedGardens: confirmed.map((g) => g.id),
             probableGardens: probable.map((g) => g.id),
             lightGardens: light.map((g) => g.id),
+            seasonalGardens: seasonal.map((g) => g.id),
             status,
             fusionDecision: p.decision ?? null,
         };
@@ -241,17 +280,43 @@ async function main(): Promise<void> {
     const year = Number(values.season);
     const season = `${year}-${String(year + 1).slice(2)}`;
     const fusionPath = join(store.dir, 'pruning-fusion', `season-${season}.json`);
-    if (!existsSync(fusionPath)) throw new Error(`Çok-sensör sezonu yok: ${fusionPath} (önce fuse-pruning)`);
-    const fusion = JSON.parse(readFileSync(fusionPath, 'utf8')) as FusionSeasonFile;
     const pixelPath = join(store.dir, 'pruning-pixels', `season-${season}.json`);
-    const pixel = existsSync(pixelPath) ? (JSON.parse(readFileSync(pixelPath, 'utf8')) as { gardens: PixelGardenLite[] }) : null;
+    const pixel = existsSync(pixelPath) ? (JSON.parse(readFileSync(pixelPath, 'utf8')) as { gardens: PixelGardenLite[]; inProgress?: boolean; dataThrough?: string | null }) : null;
+    // Live season: the multi-sensor module has not run yet (it judges a finished season). The gardens and producers
+    // come from the latest fusion season with every verdict blanked, so only the pixel scan speaks.
+    const live = !existsSync(fusionPath);
+    let fusion: FusionSeasonFile;
+    if (!live) fusion = JSON.parse(readFileSync(fusionPath, 'utf8')) as FusionSeasonFile;
+    else {
+        if (!pixel) throw new Error(`Ne çok-sensör ne piksel taraması var: ${season} (önce scan-pixels ya da fuse-pruning)`);
+        const fusionDir = join(store.dir, 'pruning-fusion');
+        const latest = (existsSync(fusionDir) ? readdirSync(fusionDir) : []).filter((n) => /^season-\d{4}-\d{2}\.json$/.test(n) && n < `season-${season}.json`).sort().at(-1);
+        if (!latest) throw new Error('Bahçe ve müstahsil listesi için en az bir çok-sensör sezonu gerekli.');
+        const base = JSON.parse(readFileSync(join(fusionDir, latest), 'utf8')) as FusionSeasonFile;
+        fusion = {
+            ...base,
+            season,
+            gardens: base.gardens.map((g) => ({ ...g, unit: 'garden', unitAreaM2: Math.round(g.areaM2), prunedArea: null, repeat: null, verdict: { ...g.verdict, class: 'no_data', kind: null, z: null, changeDate: null, lastBeforeAt: null, firstAfterAt: null } })),
+            producers: base.producers.map((p) => ({ ...p, decision: null })),
+        } as unknown as FusionSeasonFile;
+        console.log(`Canlı sezon ${season}: çok-sensör henüz yok, bahçe listesi ${latest} dosyasından; yalnız piksel taraması konuşuyor.`);
+    }
     const radarPath = join(store.dir, 'pruning-radar', `block-check-${season}.json`);
     const radar = existsSync(radarPath) ? (JSON.parse(readFileSync(radarPath, 'utf8')) as { single: RadarSingle[] }) : null;
     if (!pixel) console.log('Piksel taraması bu sezon için yok: birleşik karar yalnız çok-sensör bulgularını “muhtemel” olarak taşır.');
-    const { gardens, producers } = combine(fusion, pixel?.gardens ?? null, radar?.single ?? null);
+    // The repeat test reads the pixel caches; without them (no pixel scan in this neighbourhood) nothing is moved to "seasonal".
+    const pixDir = join(store.dir, 'pruning-pixels');
+    const timeline = existsSync(join(pixDir, 'lattice.json')) ? new PixelTimeline(pixDir, { repeatShare: COMBINED_RULES.seasonalRepeatShare }) : null;
+    const seasonalOf: SeasonalOf | null = timeline
+        ? (id, cells, before, date) => {
+            const pix = cells ? timeline.indexes(cells) : timeline.gardenPix(id);
+            return pix.length ? timeline.repeatsPrev(pix, cells ? timeline.refFor(id, pix) : null, before, date) : null;
+        }
+        : null;
+    const { gardens, producers } = combine(fusion, pixel?.gardens ?? null, radar?.single ?? null, seasonalOf, live);
 
     const count = <K extends string>(keys: readonly K[], of: (g: CombinedGarden) => K) => Object.fromEntries(keys.map((k) => [k, gardens.filter((g) => of(g) === k).length])) as Record<K, number>;
-    const classes = ['confirmed', 'probable', 'light', 'none', 'no_data'] as const;
+    const classes = ['confirmed', 'probable', 'light', 'seasonal', 'none', 'no_data'] as const;
     const agreements = ['both', 'both_other_dates', 'fusion_only', 'pixel_only', 'neither'] as const;
     const statuses = ['met', 'met_with_probable', 'partial', 'light_only', 'none', 'no_license'] as const;
     const sumArea = (c: CombinedClass, key: 'm2' | 'lowM2' | 'highM2' = 'm2') => gardens.filter((g) => g.class === c).reduce((s, g) => s + (g.area?.[key] ?? 0), 0);
@@ -262,18 +327,21 @@ async function main(): Promise<void> {
     const validationPath = join(outDir, `validation-${season}.json`);
     const out: CombinedSeasonFile = {
         season,
+        inProgress: live || !!pixel?.inProgress,
+        dataThrough: pixel?.dataThrough ?? null,
+        liveFalseAlarms: live && existsSync(join(pixDir, `validation-${season}-cv-mirror.json`)) ? (JSON.parse(readFileSync(join(pixDir, `validation-${season}-cv-mirror.json`), 'utf8')) as { positives: unknown[] }).positives.length : null,
         generatedAt: new Date().toISOString(),
         method: 'combined-fusion-pixel',
         rules: { ...COMBINED_RULES, pruningRatio: fusion.rules.pruningRatio },
-        sources: { fusion: true, pixel: !!pixel, radarCheck: !!radar },
+        sources: { fusion: !live, pixel: !!pixel, radarCheck: !!radar },
         summary: {
             gardens: gardens.length,
             byClass: count(classes, (g) => g.class),
             byAgreement: count(agreements, (g) => g.agreement),
-            areaM2: { confirmed: sumArea('confirmed'), probable: sumArea('probable'), light: sumArea('light'), lowM2: positive.reduce((s, g) => s + (g.area?.lowM2 ?? 0), 0), highM2: positive.reduce((s, g) => s + (g.area?.highM2 ?? 0), 0) },
+            areaM2: { confirmed: sumArea('confirmed'), probable: sumArea('probable'), light: sumArea('light'), seasonal: sumArea('seasonal'), lowM2: positive.reduce((s, g) => s + (g.area?.lowM2 ?? 0), 0), highM2: positive.reduce((s, g) => s + (g.area?.highM2 ?? 0), 0) },
             radarWitness: { confirmed: gardens.filter((g) => g.class === 'confirmed' && g.radar?.witness).length, probable: gardens.filter((g) => g.class === 'probable' && g.radar?.witness).length, light: gardens.filter((g) => g.class === 'light' && g.radar?.witness).length },
             producers: Object.fromEntries(statuses.map((s) => [s, producers.filter((p) => p.status === s).length])) as Record<CombinedProducerStatus, number>,
-            producersChanged: producers.filter((p) => fusionOpen(p.fusionDecision) !== (p.status === 'met' || p.status === 'met_with_probable')).length,
+            producersChanged: live ? 0 : producers.filter((p) => fusionOpen(p.fusionDecision) !== (p.status === 'met' || p.status === 'met_with_probable')).length,
         },
         validation: existsSync(validationPath) ? (JSON.parse(readFileSync(validationPath, 'utf8')) as CombinedValidation) : null,
         gardens,
@@ -282,6 +350,7 @@ async function main(): Promise<void> {
     writeFileSync(join(outDir, `season-${season}.json`), JSON.stringify(out));
     console.log(`Sezon ${season}: ${JSON.stringify(out.summary.byClass)}`);
     console.log(`Uyum: ${JSON.stringify(out.summary.byAgreement)}`);
+    console.log(`Mevsimsel desen: ${out.summary.byClass.seasonal} bahçe “muhtemel”den ayrıldı (${out.summary.areaM2.seasonal} m²; sınanan ${gardens.filter((g) => g.seasonal).length}, sınanamayan ${gardens.filter((g) => g.class === 'probable' && (!g.seasonal || g.seasonal.repeat === null)).length})`);
     console.log(`Alan: kesin ${out.summary.areaM2.confirmed} m² · muhtemel ${out.summary.areaM2.probable} m² · hafif ${out.summary.areaM2.light} m² (toplam aralık ${out.summary.areaM2.lowM2}–${out.summary.areaM2.highM2})`);
     console.log(`Radar tanığı: ${JSON.stringify(out.summary.radarWitness)}`);
     console.log(`Müstahsil: ${JSON.stringify(out.summary.producers)} · çok-sensör alım kararından farklı ${out.summary.producersChanged}`);

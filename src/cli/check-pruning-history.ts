@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import { NeighborhoodStore } from '../library/store.ts';
 import type { CombinedClass, CombinedSeasonFile } from './combine-pruning.ts';
+import { addDays, PixelTimeline } from '../pruning/pixel-timeline.ts';
 
 const USAGE = `
 Kullanım:
@@ -59,7 +60,9 @@ export interface HistorySeason {
     season: string;
     /** Whether the following season exists, i.e. whether "a year later" can be read at all. */
     hasFollowUp: boolean;
-    byClass: Record<'confirmed' | 'probable' | 'light', Counts>;
+    inProgress?: boolean;
+    /** "seasonal" = detections the combined verdict already set aside by the previous-season repeat test. */
+    byClass: Record<'confirmed' | 'probable' | 'light' | 'seasonal', Counts>;
     /** The same check on the mirrored runs' false detections of both modules. */
     mirror: { pixel: Counts; fusion: Counts } | null;
     real: Record<'confirmed' | 'probable' | 'light' | 'counted', HistoryPrecision>;
@@ -95,19 +98,9 @@ export interface HistoryFile {
     producers: HistoryProducer[];
 }
 
-interface Raw { dates: string[]; pixels: Array<[number, number]>; ndvi: Array<Array<number | null>> }
-interface Cell { pix: number; e: number; n: number; insideM2: number; insideShare: number }
 interface PixelSeason { gardens: Array<{ id: string; verdict: string; mainCluster: number | null; best: { date: string; lastBefore: string | null } | null; px: Array<[number, number, number, number | null, number | null, number, number, number]> }> }
 
-const DAY = 86_400_000;
-const addDays = (d: string, n: number) => new Date(Date.parse(d) + n * DAY).toISOString().slice(0, 10);
 const r3 = (v: number) => Math.round(v * 1000) / 1000;
-const median = (xs: number[]): number | null => {
-    if (!xs.length) return null;
-    const s = [...xs].sort((a, b) => a - b);
-    const m = s.length >> 1;
-    return s.length % 2 ? (s[m] as number) : ((s[m - 1] as number) + (s[m] as number)) / 2;
-};
 const emptyCounts = (): Counts => ({ pattern: 0, slow: 0, permanent: 0, repeating: 0, no_followup: 0, not_seen: 0 });
 
 function main(): void {
@@ -121,88 +114,44 @@ function main(): void {
     const pixDir = join(store.dir, 'pruning-pixels');
     const combDir = join(store.dir, 'pruning-combined');
     const read = <T>(path: string) => JSON.parse(readFileSync(path, 'utf8')) as T;
-    const lattice = read<{ pixels: Array<[number, number]>; cells: Record<string, Cell[]>; teaShare: number[] }>(join(pixDir, 'lattice.json'));
-    const keyOf = (e: number, n: number) => `${e}_${n}`;
-    const pixIndex = new Map(lattice.pixels.map(([e, n], i) => [keyOf(e, n), i]));
-
-    // One timeline over every cached season (the two-week overlap between seasons is taken once).
-    const at = new Map<string, Array<number | null>>();
-    for (const name of readdirSync(pixDir).filter((n) => /^cache-\d{4}-\d{2}\.json$/.test(n)).sort()) {
-        const raw = read<Raw>(join(pixDir, name));
-        const where = new Map(raw.pixels.map(([e, n], i) => [keyOf(e, n), i]));
-        const idx = lattice.pixels.map(([e, n]) => where.get(keyOf(e, n)));
-        raw.dates.forEach((d, t) => {
-            if (at.has(d)) return;
-            at.set(d, idx.map((j) => (j === undefined ? null : ((raw.ndvi[j] as Array<number | null>)[t] ?? null))));
-        });
-    }
-    const dates = [...at.keys()].sort();
-    const teaPix = lattice.pixels.map((_, i) => i).filter((i) => (lattice.teaShare[i] as number) >= R.teaShareMin);
-    // Neighbourhood reference per date; collapsed (snow / frost / shadow) and thinly covered dates are dropped, as in the scan.
-    const nbh = dates.map((d) => {
-        const row = at.get(d) as Array<number | null>;
-        const vals = teaPix.map((i) => row[i]).filter((v): v is number => v !== null && v !== undefined);
-        const med = median(vals);
-        return med !== null && vals.length / Math.max(1, teaPix.length) >= R.minDateCoverage && med >= R.collapseNdvi ? med : null;
-    });
-
-    /** Relative NDVI of a pixel set against its reference (the garden's other pixels, else the neighbourhood). */
-    const unitSeries = (pix: number[], ref: number[] | null, sign: 1 | -1): Array<number | null> =>
-        dates.map((d, t) => {
-            if (nbh[t] === null) return null;
-            const row = at.get(d) as Array<number | null>;
-            const own = pix.map((i) => row[i]).filter((v): v is number => v !== null && v !== undefined);
-            if (own.length < Math.max(1, Math.ceil(pix.length / 2))) return null;
-            const refVals = ref ? ref.map((i) => row[i]).filter((v): v is number => v !== null && v !== undefined) : [];
-            const base = ref && refVals.length >= Math.max(1, Math.ceil(ref.length / 2)) ? (median(refVals) as number) : (nbh[t] as number);
-            return sign * ((median(own) as number) - base);
-        });
-    const win = (c: Array<number | null>, from: string, to: string, min: number): number | null => {
-        const vals = dates.map((d, t) => (d >= from && d <= to ? c[t] : null)).filter((v): v is number => v !== null && v !== undefined);
-        return vals.length >= min ? median(vals) : null;
-    };
+    const timeline = new PixelTimeline(pixDir, R);
     const check = (pix: number[], ref: number[] | null, lastBefore: string, date: string, sign: 1 | -1, unit: 'cluster' | 'garden'): FollowUp => {
-        const c = unitSeries(pix, ref, sign);
-        const stepAt = (shift: number) => {
-            const pre = win(c, addDays(lastBefore, shift - R.preDays), addDays(lastBefore, shift), R.minObs);
-            const dip = win(c, addDays(date, shift), addDays(date, shift + R.dipDays), R.minObs);
-            return { pre, dip, step: pre !== null && dip !== null ? pre - dip : null };
-        };
-        const now = stepAt(0);
+        const c = timeline.series(pix, ref, { sign });
+        const now = timeline.step(c, lastBefore, date);
         const out: FollowUp = { status: 'not_seen', unit, pixels: pix.length, drop: now.step === null ? null : r3(now.step), recoveredShare: null, repeatPrev: null, repeatNext: null };
         if (now.step === null || now.step < R.minDrop) return out;
-        const prev = stepAt(-365).step;
-        const next = stepAt(365).step;
+        const prev = timeline.step(c, lastBefore, date, -365).step;
+        const next = timeline.step(c, lastBefore, date, 365).step;
         out.repeatPrev = prev === null ? null : prev >= R.repeatShare * now.step;
         out.repeatNext = next === null ? null : next >= R.repeatShare * now.step;
-        const after = win(c, addDays(date, R.yearFrom), addDays(date, R.yearTo), R.minYearObs);
+        const after = timeline.window(c, addDays(date, R.yearFrom), addDays(date, R.yearTo), R.minYearObs);
         if (after !== null) out.recoveredShare = r3((after - (now.dip as number)) / now.step);
         if (out.repeatPrev || out.repeatNext) out.status = 'repeating';
         else if (out.recoveredShare === null) out.status = 'no_followup';
         else out.status = out.recoveredShare >= R.recovered ? 'pattern' : out.recoveredShare >= R.permanent ? 'slow' : 'permanent';
         return out;
     };
-    const gardenPix = (id: string) => (lattice.cells[id] ?? []).map((c) => c.pix);
-    const refFor = (id: string, cluster: Set<number>) => {
-        const rest = gardenPix(id).filter((i) => !cluster.has(i));
-        return rest.length >= R.intraMinPixels ? rest : null;
-    };
+    const gardenPix = (id: string) => timeline.gardenPix(id);
+    const refFor = (id: string, cluster: Set<number>) => timeline.refFor(id, [...cluster]);
+    const pixIndex = { get: (key: string) => timeline.indexes([key.split('_').map(Number)])[0] };
+    const keyOf = (e: number, n: number) => `${e}_${n}`;
+    const lattice = { cells: timeline.cells };
 
     const seasonNames = readdirSync(combDir).filter((n) => /^season-\d{4}-\d{2}\.json$/.test(n)).sort().map((n) => n.slice(7, 14));
     const gardens = new Map<string, HistoryGarden>();
     const ground = new Map<string, Map<string, Set<number>>>(); // garden → season → credited pixels
     const combinedBySeason = new Map<string, CombinedSeasonFile>();
     const seasons: HistorySeason[] = [];
-    const lastDate = dates[dates.length - 1] as string;
+    const lastDate = timeline.lastDate;
 
     for (const season of seasonNames) {
         const combined = read<CombinedSeasonFile>(join(combDir, `season-${season}.json`));
         combinedBySeason.set(season, combined);
         const pixelPath = join(pixDir, `season-${season}.json`);
         const pixel = new Map((existsSync(pixelPath) ? read<PixelSeason>(pixelPath).gardens : []).map((g) => [g.id, g]));
-        const byClass = { confirmed: emptyCounts(), probable: emptyCounts(), light: emptyCounts() };
+        const byClass = { confirmed: emptyCounts(), probable: emptyCounts(), light: emptyCounts(), seasonal: emptyCounts() };
         for (const g of combined.gardens) {
-            if (g.class !== 'confirmed' && g.class !== 'probable' && g.class !== 'light') continue;
+            if (g.class !== 'confirmed' && g.class !== 'probable' && g.class !== 'light' && g.class !== 'seasonal') continue;
             const px = pixel.get(g.id);
             let followUp: FollowUp | null = null;
             let credited: number[] = [];
@@ -265,7 +214,7 @@ function main(): void {
         const p = real.counted.share;
         const b = falsePass?.share ?? null;
         const precisionFloor = hasFollowUp && falsePass && p !== null && b !== null && real.counted.evaluated >= 5 && falsePass.evaluated >= 5 && b < 1 ? r3(Math.max(0, (p - b) / (1 - b))) : null;
-        seasons.push({ season, hasFollowUp, byClass, mirror, real, falsePassRate: falsePass, precisionFloor });
+        seasons.push({ season, inProgress: !!combined.inProgress, hasFollowUp, byClass, mirror, real, falsePassRate: falsePass, precisionFloor });
     }
 
     // Multi-year consistency: the same pixels credited in two seasons.
@@ -302,6 +251,8 @@ function main(): void {
         let met = 0;
         let required = 0;
         for (const [season, c] of combinedBySeason) {
+            // A running season has no full-year target yet: it stays out of the cumulative account.
+            if (c.inProgress) continue;
             const p = c.producers.find((x) => x.id === id);
             if (!p) continue;
             licensed = Math.max(licensed, p.licensedAreaM2);
@@ -323,14 +274,14 @@ function main(): void {
         method: 'Tespit edilen piksellerin (yoksa bahçenin) göreli NDVI serisi, kararda kullanılmamış komşu sezonlarda izlenir: bir yıl sonra kapanma, aynı dönemde tekrarlama. Aynı sınama ayna testinin sahte tespitlerine uygulanır. Saha doğrulaması değildir.',
         rules: R,
         seasons,
-        multiYear: { seasons: seasonNames, gardensRepeated, repeatedM2, producers: producerCounts },
+        multiYear: { seasons: seasonNames.filter((s) => !combinedBySeason.get(s)?.inProgress), gardensRepeated, repeatedM2, producers: producerCounts },
         gardens: [...gardens.values()].sort((a, b) => a.id.localeCompare(b.id)),
         producers,
     };
     writeFileSync(join(combDir, 'history.json'), JSON.stringify(out));
     for (const s of seasons) {
         console.log(`${s.season}${s.hasFollowUp ? '' : ' (sonraki sezon henüz yok)'}`);
-        for (const k of ['confirmed', 'probable', 'light'] as const) console.log(`  ${k.padEnd(9)} ${JSON.stringify(s.byClass[k])}`);
+        for (const k of ['confirmed', 'probable', 'light', 'seasonal'] as const) console.log(`  ${k.padEnd(9)} ${JSON.stringify(s.byClass[k])}`);
         if (s.mirror) console.log(`  ayna      piksel ${JSON.stringify(s.mirror.pixel)} · çok-sensör ${JSON.stringify(s.mirror.fusion)}`);
         console.log(`  desen payı: sayılan ${s.real.counted.pattern}/${s.real.counted.evaluated} · sahte ${s.falsePassRate ? `${s.falsePassRate.pattern}/${s.falsePassRate.evaluated}` : '—'} · doğruluk alt sınırı ${s.precisionFloor ?? '—'}`);
     }

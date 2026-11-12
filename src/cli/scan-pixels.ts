@@ -8,6 +8,7 @@ import { NeighborhoodStore } from '../library/store.ts';
 import { buildDemoProducers, loadDemoLayout } from '../producers/demo-producers.ts';
 import { currentGeometry, type LicensingRegistry } from '../licensing/registry.ts';
 import { fromUtm, toUtm, utmZone } from '../geo/utm.ts';
+import { cutShape } from '../pruning/pixel-timeline.ts';
 
 type Poly = Polygon | MultiPolygon;
 type EE = any; // eslint-disable-line @typescript-eslint/no-explicit-any
@@ -142,6 +143,10 @@ export interface PixelSeasonFile {
     rules: typeof PIXEL_RULES;
     epsg: string;
     window: [string, string];
+    /** The season is still running: verdicts are interim (late cuts not in yet, recovery classes not settled). */
+    inProgress?: boolean;
+    /** Last usable image of the series. */
+    dataThrough?: string | null;
     scan: { from: string; to: string; candidates: number };
     dates: number;
     excludedDates: string[];
@@ -464,7 +469,7 @@ async function main(): Promise<void> {
             const kind = pick(['deep', 'light'] as const);
             const at = addDays(`${year}-10-01`, Math.floor(random() * span));
             // Shape: half the drop on the first days (green debris), full by day 10; deep cuts hold into summer, light ones are back in ~90 days.
-            const shape = (days: number) => Math.min(1, 0.5 + days / 20) * (kind === 'deep' ? (days <= 150 ? 1 : Math.max(0.6, 1 - (days - 150) / 250)) : Math.max(0, 1 - days / 90));
+            const shape = (days: number) => cutShape(kind, days);
             for (const c of chosen) {
                 taken.add(c.pix);
                 dates.forEach((d, t) => {
@@ -818,6 +823,8 @@ async function main(): Promise<void> {
         rules: R,
         epsg,
         window: [from, to],
+        inProgress: today < `${year + 1}-07-16`,
+        dataThrough: dates.filter((_, t) => dateOk[t]).at(-1) ?? null,
         scan: { from: scanFrom, to: scanTo, candidates: candidateDates.length },
         dates: dates.length,
         excludedDates,
@@ -843,7 +850,7 @@ async function main(): Promise<void> {
             const flagged = new Set(g.px.filter((x) => x[5] > 0).map((x) => `${x[0]}_${x[1]}`));
             const pixelRecall = inj.cells.filter(([e, n]) => flagged.has(`${e}_${n}`)).length / inj.cells.length;
             const main = g.mainCluster !== null ? g.clusters[g.mainCluster] : null;
-            return { ...inj, pixels: inj.cells.length, cells: undefined, verdict: g.verdict, detected, dateHit, pixelRecall: r3(pixelRecall), located: detected && pixelRecall >= 0.5, kindHit: detected && main?.kind === inj.kind, areaM2: g.prunedM2, date: g.best?.date ?? null, lastBefore: g.best?.lastBefore ?? null };
+            return { ...inj, pixels: inj.cells.length, cells: undefined, cutCells: inj.cells, clusterCells: g.px.filter((x) => x[5] > 0 && x[6] === g.mainCluster).map((x) => [x[0], x[1]]), verdict: g.verdict, detected, dateHit, pixelRecall: r3(pixelRecall), located: detected && pixelRecall >= 0.5, kindHit: detected && main?.kind === inj.kind, areaM2: g.prunedM2, date: g.best?.date ?? null, lastBefore: g.best?.lastBefore ?? null };
         });
         const injected = new Set(injections.map((x) => x.garden));
         const others = results.filter((g) => !injected.has(g.id));
