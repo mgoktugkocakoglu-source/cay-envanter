@@ -19,6 +19,16 @@ export function loadFusionForBundle(neighborhoodDir: string) {
         const { single: _single, dateGroups: _groups, groupStack: _stack, channels: _channels, ...rest } = JSON.parse(readFileSync(p, 'utf8')) as Record<string, unknown>;
         return rest;
     };
+    // Measured accuracy (scripts/fusion-validate.mjs): embedded by the next fuse-pruning run; read from the validation
+    // file when the season has not been re-run since (the per-cut trials and mirrored positives stay in the file).
+    const validationOf = (s: FusionSeasonFile) => {
+        if (s.validation) return s.validation;
+        const path = join(dir, `validation-${s.season}.json`);
+        if (!existsSync(path)) return null;
+        const { trials: _trials, falseAlarms, ...rest } = JSON.parse(readFileSync(path, 'utf8')) as NonNullable<FusionSeasonFile['validation']> & { trials?: unknown; falseAlarms: NonNullable<FusionSeasonFile['validation']>['falseAlarms'] & { positives?: unknown } };
+        const { positives: _positives, ...alarms } = falseAlarms;
+        return { ...rest, falseAlarms: alarms };
+    };
     return {
         calibrated: seasons.some((s) => !!s.calibration),
         calibration: seasons.at(-1)!.calibration ?? null,
@@ -33,7 +43,7 @@ export function loadFusionForBundle(neighborhoodDir: string) {
             scanTo: s.scanTo,
             sensors: s.sensors,
             parcelCoverage: s.parcelCoverage,
-            validation: s.validation ?? null,
+            validation: validationOf(s),
             radarCheck: radarCheckOf(s.season),
             prunedArea: s.summary.prunedArea ?? null,
             // Series of free patches are not shipped (no owner to show them to yet); verdicts are.

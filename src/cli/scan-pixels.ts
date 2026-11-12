@@ -75,6 +75,8 @@ export const PIXEL_RULES = {
     baselineNbr: 0,
     baselineDays: 20,
     baselineWideDays: 40,
+    /** How many earlier seasons feed the baseline: fixed, so that every season is scanned with the same depth of history. */
+    baselineBack: 2,
     /** Pruned-pixel NDVI end member: field-calibrated on one case (136/12, Oct 2026) and the literature default as the low bound. */
     ndviPruned: 0.69,
     ndviPrunedDefault: 0.35,
@@ -487,7 +489,7 @@ async function main(): Promise<void> {
         const dayOfSeason = (d: string, y: number) => daysBetween(`${y}-07-01`, d);
         const history: Array<Array<{ dos: number; a: number }>> = pixels.map(() => []);
         const historyB: Array<Array<{ dos: number; a: number }>> = pixels.map(() => []);
-        for (const back of [1, 2, 3]) {
+        for (const back of [1, 2, 3].slice(0, R.baselineBack)) {
             const py = year - back;
             const path = join(outDir, `cache-${py}-${String(py + 1).slice(2)}.json`);
             if (!existsSync(path)) continue;
@@ -853,7 +855,7 @@ async function main(): Promise<void> {
             gardens: results.length,
             countedOutsideInjections: others.filter(counted).length,
             // Per-garden positives: the combined module's validation needs to know which gardens, not only how many.
-            positives: results.filter(counted).map((g) => ({ id: g.id, verdict: g.verdict, date: g.best?.date ?? null, lastBefore: g.best?.lastBefore ?? null })),
+            positives: results.filter(counted).map((g) => ({ id: g.id, verdict: g.verdict, date: g.best?.date ?? null, lastBefore: g.best?.lastBefore ?? null, cells: g.px.filter((x) => x[5] > 0 && x[6] === g.mainCluster).map((x) => [x[0], x[1]]) })),
             byVerdict,
             trials,
         };
