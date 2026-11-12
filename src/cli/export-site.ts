@@ -16,6 +16,7 @@ import { loadLandForBundle } from '../land/bundle.ts';
 import { loadAgeForBundle } from '../age/bundle.ts';
 import { loadFieldTestsForBundle } from '../pruning/field-tests-bundle.ts';
 import { loadPixelScanForBundle } from '../pruning/pixel-scan-bundle.ts';
+import { loadCombinedForBundle } from '../pruning/combined-bundle.ts';
 
 /**
  * Packs one neighborhood's inventory into a single JSON bundle for the cayhesabim site
@@ -195,6 +196,8 @@ function main(): void {
         fieldTests: loadFieldTestsForBundle(store.dir, roundCoords),
         // Optional: lattice-level undated pruning scan per garden (scan-pixels; separate from the fusion verdicts).
         pixelScan: loadPixelScanForBundle(store.dir),
+        // Optional: one verdict per garden from the fusion module and the pixel scan together (combine-pruning; separate module).
+        pruningCombined: loadCombinedForBundle(store.dir),
         licensing: {
             demo: true,
             generatedAt: registry.generatedAt,

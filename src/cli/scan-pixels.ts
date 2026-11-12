@@ -841,7 +841,7 @@ async function main(): Promise<void> {
             const flagged = new Set(g.px.filter((x) => x[5] > 0).map((x) => `${x[0]}_${x[1]}`));
             const pixelRecall = inj.cells.filter(([e, n]) => flagged.has(`${e}_${n}`)).length / inj.cells.length;
             const main = g.mainCluster !== null ? g.clusters[g.mainCluster] : null;
-            return { ...inj, pixels: inj.cells.length, cells: undefined, verdict: g.verdict, detected, dateHit, pixelRecall: r3(pixelRecall), located: detected && pixelRecall >= 0.5, kindHit: detected && main?.kind === inj.kind, areaM2: g.prunedM2 };
+            return { ...inj, pixels: inj.cells.length, cells: undefined, verdict: g.verdict, detected, dateHit, pixelRecall: r3(pixelRecall), located: detected && pixelRecall >= 0.5, kindHit: detected && main?.kind === inj.kind, areaM2: g.prunedM2, date: g.best?.date ?? null, lastBefore: g.best?.lastBefore ?? null };
         });
         const injected = new Set(injections.map((x) => x.garden));
         const others = results.filter((g) => !injected.has(g.id));
@@ -852,6 +852,8 @@ async function main(): Promise<void> {
             overrides: values.set ?? '',
             gardens: results.length,
             countedOutsideInjections: others.filter(counted).length,
+            // Per-garden positives: the combined module's validation needs to know which gardens, not only how many.
+            positives: results.filter(counted).map((g) => ({ id: g.id, verdict: g.verdict, date: g.best?.date ?? null, lastBefore: g.best?.lastBefore ?? null })),
             byVerdict,
             trials,
         };

@@ -26,7 +26,8 @@
         "evaluate-land": "node src/cli/evaluate-land.ts",
         "garden-age": "node src/cli/scan-garden-age.ts",
         "field-test": "node src/cli/field-test.ts",
-        "scan-pixels": "node src/cli/scan-pixels.ts"
+        "scan-pixels": "node src/cli/scan-pixels.ts",
+        "combine-pruning": "node src/cli/combine-pruning.ts"
     },
     "dependencies": {
         "@google/earthengine": "^1.7.47",

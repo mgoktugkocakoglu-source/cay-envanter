@@ -43,9 +43,9 @@ for (let seed = 1; seed <= Number(values.rounds); seed++) {
         if (!g || !o || g.realClass === 'pruned' || g.realClass === 'likely') continue;
         trials.push({
             seed, garden: p.garden, pixels: p.pixels, depth: p.depth, kind: p.kind, at: p.at, cutM2: p.cutM2, gardenM2: g.gardenM2, share: g.share,
-            pixel: { counted: p.detected, full: p.detected && p.dateHit && p.located, areaM2: p.areaM2 },
-            mean: { class: g.class, counted: g.counted, confirmed: g.confirmed, dateHit: g.dateHit, dateErrorDays: g.dateErrorDays },
-            patch: { class: o.class, counted: o.counted, confirmed: o.confirmed, dateHit: o.dateHit, dateErrorDays: o.dateErrorDays, unit: o.unit },
+            pixel: { counted: p.detected, full: p.detected && p.dateHit && p.located, areaM2: p.areaM2, verdict: p.verdict, date: p.date ?? null, lastBefore: p.lastBefore ?? null },
+            mean: { class: g.class, counted: g.counted, confirmed: g.confirmed, dateHit: g.dateHit, dateErrorDays: g.dateErrorDays, changeDate: g.changeDate },
+            patch: { class: o.class, counted: o.counted, confirmed: o.confirmed, dateHit: o.dateHit, dateErrorDays: o.dateErrorDays, unit: o.unit, changeDate: o.changeDate },
         });
     }
     console.log(`tur ${seed}: ${trials.length} kesim`);
