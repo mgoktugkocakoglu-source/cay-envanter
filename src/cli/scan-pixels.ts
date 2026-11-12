@@ -418,7 +418,7 @@ async function main(): Promise<void> {
     });
     const excludedDates = dates.filter((_, t) => !dateOk[t]);
     // ── Validation modes: the raw series are altered in memory only ──
-    interface Injection { garden: string; pixels: number[]; cells: Array<[number, number]>; depth: number; kind: 'deep' | 'light'; at: string }
+    interface Injection { garden: string; pixels: number[]; cells: Array<[number, number]>; depth: number; kind: 'deep' | 'light'; at: string; cutM2: number }
     const injections: Injection[] = [];
     if (values.mirror) {
         // Mirror every pixel around its own season median: rises become drops. Nothing that greens up is a pruning,
@@ -474,7 +474,7 @@ async function main(): Promise<void> {
                     if (bv !== null && bv !== undefined) (raw.nbr[c.pix] as Array<number | null>)[t] = r3(bv - 0.8 * depth * f);
                 });
             }
-            injections.push({ garden: g.id, pixels: chosen.map((c) => c.pix), cells: chosen.map((c) => [c.e, c.n]), depth, kind, at });
+            injections.push({ garden: g.id, pixels: chosen.map((c) => c.pix), cells: chosen.map((c) => [c.e, c.n]), depth, kind, at, cutM2: Math.round(chosen.reduce((s, c) => s + c.insideM2, 0)) });
         }
     }
     const ndRaw = (i: number, t: number) => (dateOk[t] ? ((raw.ndvi[i] as Array<number | null>)[t] ?? null) : null);

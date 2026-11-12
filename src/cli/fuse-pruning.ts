@@ -50,6 +50,38 @@ interface CoherenceFile {
     gardens: Record<string, Record<string, Array<number | null>>>;
 }
 
+/**
+ * Pruned ground in square metres for a "pruned" / "likely" garden, with how it was measured:
+ *  - pixel_scan: the cluster the lattice scan drew at the same change (10 m pixels, partial-pixel fraction);
+ *  - change_patch: the optical change patch that carried the verdict (whole 10 m pixels: an upper figure);
+ *  - ndvi_fraction: no shape available; the share of the unit that must have been cut to explain its NDVI drop.
+ * Reported next to the verdict; the 1/7 accounting still runs on the verdict unit (unitAreaM2 / repeat).
+ */
+export interface FusionPrunedArea {
+    m2: number;
+    lowM2: number;
+    highM2: number;
+    method: 'pixel_scan' | 'change_patch' | 'ndvi_fraction';
+    shareOfGarden: number;
+    note: string;
+}
+
+/** Measured without ground truth by scripts/fusion-validate.mjs, on the same simulated cuts as the pixel scan. */
+export interface FusionValidation {
+    season: string;
+    generatedAt: string;
+    gardens: number;
+    real: { pruned: number; likely: number; unclear: number };
+    falseAlarms: { gardens: number; pruned: number; likely: number; share: number; unclear: number; note: string };
+    detection: { trials: number; note: string } & Record<'fusionGarden' | 'fusionPatch' | 'fusionPatchConfirmed' | 'fusionPatchDated' | 'pixel' | 'pixelFull' | 'either', FusionRateBlock>;
+}
+export interface FusionRate { hit: number; n: number; rate: number | null }
+export interface FusionRateBlock {
+    overall: FusionRate; realistic: FusionRate; clear: FusionRate; deep: FusionRate; light: FusionRate;
+    bySize: Record<string, FusionRate>; byDepth: Record<string, FusionRate>; byShare: Record<string, FusionRate>;
+    table: Array<{ pixels: number; cells: FusionRate[] }>;
+}
+
 export interface FusionGarden {
     id: string;
     producerId: string;
@@ -71,6 +103,8 @@ export interface FusionGarden {
         evidence: Array<{ season: string; overlapM2: number; class: FusionClass }>;
     } | null;
     verdict: FusionVerdict;
+    /** Pruned square metres with a range and the method behind it (null unless pruned / likely). */
+    prunedArea: FusionPrunedArea | null;
     detectedAt: string | null;
     likelyAt: string | null;
     scans: Array<{ date: string; z: number | null; class: FusionClass }>;
@@ -153,6 +187,8 @@ export interface FusionSummary {
     recoveryFailed: number;
     recoveryUntested: number;
     outsideCalendar: number;
+    /** Pruned square metres over the pruned / likely gardens: measured figure with its range, and the verdict-unit total it replaces on screen. */
+    prunedArea: { m2: number; lowM2: number; highM2: number; unitM2: number; byMethod: Record<string, { gardens: number; m2: number }> };
 }
 
 export interface FusionSeasonFile {
@@ -178,6 +214,8 @@ export interface FusionSeasonFile {
     baselineSeason: string | null;
     /** Present when calibrate-fusion ran with --apply: the field-label scores behind the thresholds in `rules`. */
     calibration?: { labels: number; positives: number; negatives: number; recall: number | null; falseAlarmRate: number | null; zPruned: number; zLikely: number; computedAt: string } | null;
+    /** Present once scripts/fusion-validate.mjs has run for the season. */
+    validation?: FusionValidation | null;
 }
 
 export { DECISION_POLICY };
@@ -193,6 +231,11 @@ async function main(): Promise<void> {
             ratio: { type: 'string', default: process.env.PRUNING_RATIO ?? '7' },
             'no-baseline': { type: 'boolean', default: false },
             refetch: { type: 'boolean', default: false },
+            // Validation modes (never write the season file): mirrored series = false-alarm estimate; --inject = the pixel scan's simulated cuts, at garden scale.
+            mirror: { type: 'boolean', default: false },
+            inject: { type: 'string' },
+            'patch-oracle': { type: 'boolean', default: false },
+            tag: { type: 'string', default: 'run' },
         },
     });
     if (!values.province || !values.district || !values.neighborhood) {
@@ -230,6 +273,19 @@ async function main(): Promise<void> {
         for (const e of scan.events) {
             if (e.areaM2 >= 100) patches.set(e.gardenId, { geometry: e.geometry, areaM2: e.areaM2 });
             if (e.areaM2 > 0) reusedShare.set(e.gardenId, e.reusedM2 / e.areaM2);
+        }
+    }
+    // Validation: the simulated cuts of a scan-pixels --simulate run (same gardens, dates, depths, recovery shapes).
+    interface SimCut { garden: string; depth: number; kind: 'deep' | 'light'; at: string; pixels: number; cutM2: number }
+    const validating = values.mirror || values.inject !== undefined;
+    const simCuts: SimCut[] = values.inject ? (JSON.parse(readFileSync(values.inject, 'utf8')) as { trials: SimCut[] }).trials : [];
+    if (values.inject) {
+        // The simulated gardens' real change patches do not belong to the simulated cut. With --patch-oracle the
+        // optical patch scan is assumed to have drawn the cut exactly (upper bound); without it no patch exists (lower bound).
+        for (const c of simCuts) {
+            patches.delete(c.garden);
+            const g = gardens.find((x) => x.id === c.garden);
+            if (values['patch-oracle'] && g && c.cutM2 >= 100) patches.set(c.garden, { geometry: g.geometry, areaM2: Math.min(c.cutM2, g.areaM2) });
         }
     }
     // Tea outside every harvested parcel (the TKGM harvest is quota-bound and still growing):
@@ -371,6 +427,61 @@ async function main(): Promise<void> {
     const coherence = cohPath ? (JSON.parse(readFileSync(cohPath, 'utf8')) as CoherenceFile) : null;
     console.log(coherence ? `Koherans (${coherence.source ?? 'snap'}): ${coherence.passes.map((p) => `${p.pass} ${p.pairs.length} çift`).join(', ')}` : 'Koherans dosyası yok');
 
+    // ── Validation modes: the cached series are altered in memory only ──
+    if (validating) {
+        const okDate = quality.map((q) => q.ok);
+        const med = (xs: number[]) => (xs.length ? [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)]! : null);
+        const optKeys = ['ndvi', 'nbr', 'ndre', 'ndii'] as const;
+        if (values.mirror) {
+            // Every unit and channel is mirrored around its own season median: rises become drops. Nothing that
+            // greens up (or whose backscatter rises) is a pruning, so what is still called pruned is a false alarm.
+            const flip = (row: Array<number | null> | undefined, usable?: boolean[]) => {
+                if (!row) return;
+                const m = med(row.filter((v, t): v is number => v !== null && v !== undefined && (usable ? usable[t] === true : true)));
+                if (m === null) return;
+                for (let t = 0; t < row.length; t++) if (row[t] !== null && row[t] !== undefined) row[t] = Math.round((2 * m - (row[t] as number)) * 1000) / 1000;
+            };
+            for (const u of Object.values(optical.gardens)) for (const k of optKeys) flip(u[k], okDate);
+            for (const b of backscatter) for (const rows of [b.vh, b.vv]) for (const row of Object.values(rows)) flip(row);
+            if (coherence) for (const byPass of Object.values(coherence.gardens)) for (const row of Object.values(byPass)) flip(row);
+        }
+        const daysFrom = (a: string, b: string) => Math.round((Date.parse(b) - Date.parse(a)) / 864e5);
+        // Same response per index as the fusion synthetic scenarios: NBR 0.8, NDRE 0.6, NDII 0.72 of the NDVI drop.
+        const gain = { ndvi: 1, nbr: 0.8, ndre: 0.6, ndii: 0.72 } as const;
+        for (const c of simCuts) {
+            const g = gardens.find((x) => x.id === c.garden);
+            const src = optical.gardens[c.garden];
+            if (!g || !src) continue;
+            // Same shape as the pixel simulation: half the drop at once, full by day 10; deep holds into summer, light is back in ~90 days.
+            const shape = (days: number) => Math.min(1, 0.5 + days / 20) * (c.kind === 'deep' ? (days <= 150 ? 1 : Math.max(0.6, 1 - (days - 150) / 250)) : Math.max(0, 1 - days / 90));
+            const apply = (unit: typeof src, share: number) => {
+                for (const k of optKeys) {
+                    const row = unit[k];
+                    if (!row) continue;
+                    optical.dates.forEach((d, t) => {
+                        if (d <= c.at || row[t] === null || row[t] === undefined) return;
+                        row[t] = Math.round(((row[t] as number) - c.depth * gain[k] * share * shape(daysFrom(c.at, d))) * 1000) / 1000;
+                    });
+                }
+            };
+            if (patches.has(c.garden)) {
+                // The patch unit reads the cut pixels alone: the garden's own series with the full drop. Radar carries no injected signal.
+                const copy = JSON.parse(JSON.stringify(src)) as typeof src;
+                apply(copy, 1);
+                optical.gardens[`${c.garden}#patch`] = copy;
+                for (const b of backscatter) {
+                    if (b.vh[c.garden]) b.vh[`${c.garden}#patch`] = [...b.vh[c.garden]!];
+                    if (b.vv[c.garden]) b.vv[`${c.garden}#patch`] = [...b.vv[c.garden]!];
+                }
+            } else {
+                delete optical.gardens[`${c.garden}#patch`];
+            }
+            // The garden mean sees the cut diluted by the share of the garden it covers.
+            apply(src, Math.min(1, c.cutM2 / Math.max(1, g.areaM2)));
+        }
+        console.log(`DOĞRULAMA KİPİ: ${values.mirror ? 'ayna' : ''}${values.inject ? ` ${simCuts.length} sentetik kesim${values['patch-oracle'] ? ' (ideal yama)' : ' (yalnız bahçe ortalaması)'}` : ''}`);
+    }
+
     // Prior-season context: the unit's own earlier winter tells its habitual noise and whether it
     // dips transiently (shade / snow pocket). Cached per season; fetched once when missing.
     const prevWindows = pruningWindows(year - 1);
@@ -481,6 +592,42 @@ async function main(): Promise<void> {
         return hit ? turfArea(hit) : 0;
     };
 
+    // Pruned square metres. The lattice scan (scan-pixels) draws the cut itself; where it found the same change it gives
+    // the area. Otherwise the change patch, and failing that the NDVI drop of the unit turned into a cut share.
+    const pixelPath = join(store.dir, 'pruning-pixels', `season-${windows.season}.json`);
+    type PixelGardenLite = { id: string; verdict: string; best: { date: string; lastBefore: string | null } | null; prunedM2: number; prunedLowM2: number; prunedUpperM2: number };
+    const pixelFile = existsSync(pixelPath) ? (JSON.parse(readFileSync(pixelPath, 'utf8')) as { rules: Record<string, unknown>; gardens: PixelGardenLite[] }) : null;
+    const pixelById = new Map((pixelFile?.gardens ?? []).map((g) => [g.id, g]));
+    // NDVI of freshly pruned ground: the field-calibrated figure of the lattice scan (light cut) and the bare-frame default (deep cut).
+    const ndviPrunedHigh = Number(pixelFile?.rules.ndviPruned ?? 0.69);
+    const ndviPrunedLow = Number(pixelFile?.rules.ndviPrunedDefault ?? 0.35);
+    const dayGap = (a: string, b: string) => Math.abs(Date.parse(a) - Date.parse(b)) / 864e5;
+    const prunedAreaOf = (id: string, gardenM2: number, unit: 'garden' | 'patch', unitM2: number, v: FusionVerdict): FusionPrunedArea | null => {
+        if (v.class !== 'pruned' && v.class !== 'likely') return null;
+        const share = (m2: number) => (gardenM2 > 0 ? Math.round(Math.min(1, m2 / gardenM2) * 1000) / 1000 : 0);
+        const px = pixelById.get(id);
+        // Same event: the lattice scan's change bracket lies within 45 days of the fusion change date.
+        if (px && (px.verdict === 'deep' || px.verdict === 'light') && px.best && px.prunedM2 > 0 && v.changeDate && Math.min(dayGap(px.best.date, v.changeDate), dayGap(px.best.lastBefore ?? px.best.date, v.changeDate)) <= 45) {
+            const m2 = Math.min(px.prunedM2, Math.round(gardenM2));
+            return { m2, lowM2: Math.min(px.prunedLowM2, m2), highM2: Math.max(m2, Math.min(px.prunedUpperM2, Math.round(gardenM2))), method: 'pixel_scan', shareOfGarden: share(m2), note: `Piksel taramasının çizdiği küme (${px.best.lastBefore ?? '—'} → ${px.best.date}); üst sınır tam piksel alanı` };
+        }
+        const lv = v.levels;
+        const drop = lv?.drop ?? null;
+        const before = lv?.ndviBefore ?? null;
+        const frac = (pruned: number) => (drop !== null && before !== null && drop > 0 ? (before - pruned > 0.02 ? Math.min(1, drop / (before - pruned)) : 1) : null);
+        const fLow = frac(ndviPrunedLow);
+        const fHigh = frac(ndviPrunedHigh);
+        if (unit === 'patch') {
+            const low = fLow === null ? unitM2 : Math.round(unitM2 * fLow);
+            return { m2: Math.round(unitM2), lowM2: Math.min(low, Math.round(unitM2)), highM2: Math.round(unitM2), method: 'change_patch', shareOfGarden: share(unitM2), note: 'Optik değişim yamasının alanı (tam 10 m pikseller); alt sınır yamanın NDVI düşüşünden hesaplanan kesilmiş pay' };
+        }
+        if (fLow === null || fHigh === null) return { m2: Math.round(unitM2), lowM2: 0, highM2: Math.round(unitM2), method: 'ndvi_fraction', shareOfGarden: share(unitM2), note: 'Kesimin şekli çizilemedi ve ham NDVI düzeyi yok: alan bahçenin tamamı ile sınırlandı' };
+        const low = Math.round(unitM2 * fLow);
+        const high = Math.round(unitM2 * fHigh);
+        const m2 = Math.round((low + high) / 2);
+        return { m2, lowM2: low, highM2: high, method: 'ndvi_fraction', shareOfGarden: share(m2), note: `Kesimin şekli çizilemedi: bahçe ortalamasındaki NDVI düşüşünü (${(drop ?? 0).toFixed(2)}) açıklayan kesilmiş pay; alt sınır derin kesim (budanmış zemin NDVI ${ndviPrunedLow}), üst sınır hafif kesim (${ndviPrunedHigh}) varsayımı` };
+    };
+
     console.log('Bahçeler değerlendiriliyor…');
     const rank: Record<FusionClass, number> = { pruned: 4, likely: 3, unclear: 2, not_pruned: 1, no_data: 0 };
     type Candidate = { unit: 'garden' | 'patch'; series: ChannelSeries[]; areaM2: number; geometry: Poly; verdict: FusionVerdict };
@@ -541,7 +688,7 @@ async function main(): Promise<void> {
         const best = judged.map((c) => ({ ...c, verdict: calibrate(c.verdict) })).sort((a, b) => rank[b.verdict.class] - rank[a.verdict.class] || (b.verdict.z ?? 0) - (a.verdict.z ?? 0))[0]!;
         if (downgraded.has(best.verdict)) populationDowngraded++;
         if (resolved.has(best.verdict)) populationResolved++;
-        const timeline = scanTimeline(best.series, scanFrom, scanTo, every, ctx);
+        const timeline = validating ? { detectedAt: null, likelyAt: null, scans: [] } : scanTimeline(best.series, scanFrom, scanTo, every, ctx);
         // A scan may call a garden "pruned" and later data may withdraw it: the dates reported
         // are the first scans that reached the verdict the full season finally supports.
         const finalPruned = best.verdict.class === 'pruned';
@@ -565,6 +712,7 @@ async function main(): Promise<void> {
             unitGeometry: best.geometry,
             repeat,
             verdict: best.verdict,
+            prunedArea: prunedAreaOf(g.id, g.areaM2, best.unit, Math.round(best.areaM2), best.verdict),
             detectedAt: finalPruned ? timeline.detectedAt : null,
             likelyAt: finalLikely ? timeline.likelyAt : null,
             scans: timeline.scans,
@@ -574,6 +722,34 @@ async function main(): Promise<void> {
     });
     const counts = outGardens.reduce<Record<string, number>>((h, g) => ((h[g.verdict.class] = (h[g.verdict.class] ?? 0) + 1), h), {});
     console.log(`Bahçe kararları: ${JSON.stringify(counts)}`);
+    if (validating) {
+        const realPath = join(outDir, `season-${windows.season}.json`);
+        const real = existsSync(realPath) ? new Map((JSON.parse(readFileSync(realPath, 'utf8')) as FusionSeasonFile).gardens.map((g) => [g.id, g.verdict.class])) : new Map<string, FusionClass>();
+        const byId = new Map(outGardens.map((g) => [g.id, g]));
+        const trials = simCuts.map((c) => {
+            const g = byId.get(c.garden);
+            const v = g?.verdict;
+            const counted = v?.class === 'pruned' || v?.class === 'likely';
+            const dateHit = counted && !!v?.lastBeforeAt && !!v?.firstAfterAt && v.lastBeforeAt <= c.at && c.at < v.firstAfterAt;
+            const dateErrorDays = v?.changeDate ? Math.round((Date.parse(v.changeDate) - Date.parse(c.at)) / 864e5) : null;
+            return { ...c, gardenM2: g?.areaM2 ?? null, share: g ? Math.round(Math.min(1, c.cutM2 / Math.max(1, g.areaM2)) * 1000) / 1000 : null, realClass: real.get(c.garden) ?? null, class: v?.class ?? null, kind: c.kind, verdictKind: v?.kind ?? null, unit: g?.unit ?? null, unitAreaM2: g?.unitAreaM2 ?? null, z: v?.z ?? null, changeDate: v?.changeDate ?? null, lastBeforeAt: v?.lastBeforeAt ?? null, firstAfterAt: v?.firstAfterAt ?? null, counted, confirmed: v?.class === 'pruned', dateHit, dateErrorDays };
+        });
+        const injected = new Set(simCuts.map((c) => c.garden));
+        const validation = {
+            season: windows.season,
+            mode: values.mirror ? 'mirror' : 'simulate',
+            patchOracle: values['patch-oracle'],
+            tag: values.tag,
+            gardens: outGardens.length,
+            byClass: counts,
+            positives: outGardens.filter((g) => g.verdict.class === 'pruned' || g.verdict.class === 'likely').map((g) => ({ id: g.id, class: g.verdict.class, kind: g.verdict.kind ?? null, unit: g.unit, z: g.verdict.z, changeDate: g.verdict.changeDate })),
+            countedOutsideInjections: outGardens.filter((g) => !injected.has(g.id) && (g.verdict.class === 'pruned' || g.verdict.class === 'likely')).length,
+            trials,
+        };
+        writeFileSync(join(outDir, `validation-${windows.season}-${values.tag}.json`), JSON.stringify(validation));
+        console.log(`VALIDATION ${JSON.stringify({ mode: validation.mode, tag: values.tag, oracle: validation.patchOracle, byClass: counts, trials: trials.length, counted: trials.filter((t) => t.counted).length, confirmed: trials.filter((t) => t.confirmed).length, dateHit: trials.filter((t) => t.dateHit).length })}`);
+        return;
+    }
     const medianOf = (xs: number[]) => (xs.length ? [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)]! : null);
     const obsHist: Record<string, number> = {};
     for (const g of outGardens) {
@@ -611,7 +787,18 @@ async function main(): Promise<void> {
         recoveryFailed: strong.filter((g) => g.verdict.recovery?.ok === false).length,
         recoveryUntested: strong.filter((g) => !g.verdict.recovery || g.verdict.recovery.ok === null).length,
         outsideCalendar: outGardens.filter((g) => g.verdict.inCalendar === false && (g.verdict.class === 'pruned' || g.verdict.class === 'likely')).length,
+        prunedArea: (() => {
+            const withArea = outGardens.filter((g) => g.prunedArea);
+            const byMethod: Record<string, { gardens: number; m2: number }> = {};
+            for (const g of withArea) {
+                const m = (byMethod[g.prunedArea!.method] ??= { gardens: 0, m2: 0 });
+                m.gardens++;
+                m.m2 += g.prunedArea!.m2;
+            }
+            return { m2: withArea.reduce((s, g) => s + g.prunedArea!.m2, 0), lowM2: withArea.reduce((s, g) => s + g.prunedArea!.lowM2, 0), highM2: withArea.reduce((s, g) => s + g.prunedArea!.highM2, 0), unitM2: withArea.reduce((s, g) => s + g.unitAreaM2, 0), byMethod };
+        })(),
     };
+    console.log(`Budanan alan: ${summary.prunedArea.m2} m² (${summary.prunedArea.lowM2}–${summary.prunedArea.highM2}); karar birimi toplamı ${summary.prunedArea.unitM2} m²; yöntem ${JSON.stringify(summary.prunedArea.byMethod)}`);
     console.log(`Karar türleri: ${JSON.stringify(summary.kinds)}`);
     console.log(`Fiziksel kontroller (güçlü optik sinyalli ${summary.strongSignals} bahçede): kademeli kayıp ${summary.gradual}, ham NDVI düşmeyen ${summary.levelFailed}, yaz toparlanma testi ✓ ${summary.recoveryConfirmed} / ✗ ${summary.recoveryFailed} / test edilemedi ${summary.recoveryUntested}; takvim dışı ${summary.outsideCalendar}; toplum kalibrasyonu: ${summary.populationDowngraded} karar indirildi, ${summary.populationResolved} zayıf sinyal "budama yok" oldu`);
     console.log(`Gözlenebilirlik: optik gözlem ortancası ${summary.medianOpticalObs}, boşluk ortancası ${summary.medianOpticalGapDays} gün, az gözlenen ${summary.underObserved}, gölgeye yatkın ${summary.shadeProne}; incelensin ${summary.review}; kesin kararlar ${JSON.stringify(summary.prunedBy)}`);
@@ -740,6 +927,14 @@ async function main(): Promise<void> {
         summary,
         baselineSeason: baseline ? prevWindows.season : null,
         calibration,
+        validation: (() => {
+            const p = join(outDir, `validation-${windows.season}.json`);
+            if (!existsSync(p)) return null;
+            // The per-cut trial list and the mirrored positives stay in the validation file; the season file carries the rates.
+            const { trials: _t, falseAlarms, ...rest } = JSON.parse(readFileSync(p, 'utf8')) as FusionValidation & { trials?: unknown; falseAlarms: FusionValidation['falseAlarms'] & { positives?: unknown } };
+            const { positives: _p, ...alarms } = falseAlarms;
+            return { ...rest, falseAlarms: alarms };
+        })(),
     };
     const outPath = join(outDir, `season-${windows.season}.json`);
     writeFileSync(outPath, JSON.stringify(out));

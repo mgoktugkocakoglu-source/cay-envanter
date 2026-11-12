@@ -12,6 +12,13 @@ export function loadFusionForBundle(neighborhoodDir: string) {
     const files = readdirSync(dir).filter((n) => /^season-\d{4}-\d{2}\.json$/.test(n)).sort();
     if (files.length === 0) return null;
     const seasons = files.map((n) => JSON.parse(readFileSync(join(dir, n), 'utf8')) as FusionSeasonFile);
+    // Block-scale radar test (scripts/radar-block-check.ts): the per-garden rows stay in the file, the summary is shipped.
+    const radarCheckOf = (season: string) => {
+        const p = join(neighborhoodDir, 'pruning-radar', `block-check-${season}.json`);
+        if (!existsSync(p)) return null;
+        const { single: _single, dateGroups: _groups, groupStack: _stack, channels: _channels, ...rest } = JSON.parse(readFileSync(p, 'utf8')) as Record<string, unknown>;
+        return rest;
+    };
     return {
         calibrated: seasons.some((s) => !!s.calibration),
         calibration: seasons.at(-1)!.calibration ?? null,
@@ -26,12 +33,21 @@ export function loadFusionForBundle(neighborhoodDir: string) {
             scanTo: s.scanTo,
             sensors: s.sensors,
             parcelCoverage: s.parcelCoverage,
+            validation: s.validation ?? null,
+            radarCheck: radarCheckOf(s.season),
+            prunedArea: s.summary.prunedArea ?? null,
             // Series of free patches are not shipped (no owner to show them to yet); verdicts are.
             unassigned: s.unassigned.map((u) => ({ id: u.id, areaM2: u.areaM2, geometry: u.geometry, verdict: { ...u.verdict, groups: undefined }, detectedAt: u.detectedAt, likelyAt: u.likelyAt })),
             gardens: s.gardens.map((g) => ({
                 code: g.id,
                 producerCode: g.producerId,
                 verdict: g.verdict,
+                // The unit that carried the verdict and the pruned square metres: the site must not fall back to the whole garden.
+                unit: g.unit,
+                unitAreaM2: g.unitAreaM2,
+                unitGeometry: g.unit === 'patch' ? g.unitGeometry : undefined,
+                repeat: g.repeat,
+                prunedArea: g.prunedArea ?? null,
                 detectedAt: g.detectedAt,
                 likelyAt: g.likelyAt,
                 scans: g.scans,
