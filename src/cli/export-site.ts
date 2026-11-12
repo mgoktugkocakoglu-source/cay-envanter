@@ -17,6 +17,7 @@ import { loadAgeForBundle } from '../age/bundle.ts';
 import { loadFieldTestsForBundle } from '../pruning/field-tests-bundle.ts';
 import { loadPixelScanForBundle } from '../pruning/pixel-scan-bundle.ts';
 import { loadCombinedForBundle } from '../pruning/combined-bundle.ts';
+import { loadLicenceAuditForBundle } from '../audit/bundle.ts';
 
 /**
  * Packs one neighborhood's inventory into a single JSON bundle for the cayhesabim site
@@ -198,6 +199,8 @@ function main(): void {
         pixelScan: loadPixelScanForBundle(store.dir),
         // Optional: one verdict per garden from the fusion module and the pixel scan together (combine-pruning; separate module).
         pruningCombined: loadCombinedForBundle(store.dir),
+        // Optional: licence audit (deed title × licence register × title-independent detection; separate module under licensing).
+        licenceAudit: loadLicenceAuditForBundle(store.dir),
         licensing: {
             demo: true,
             generatedAt: registry.generatedAt,

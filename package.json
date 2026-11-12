@@ -28,7 +28,8 @@
         "field-test": "node src/cli/field-test.ts",
         "scan-pixels": "node src/cli/scan-pixels.ts",
         "combine-pruning": "node src/cli/combine-pruning.ts",
-        "pruning-history": "node src/cli/check-pruning-history.ts"
+        "pruning-history": "node src/cli/check-pruning-history.ts",
+        "audit-licensing": "node src/cli/audit-licensing.ts"
     },
     "dependencies": {
         "@google/earthengine": "^1.7.47",
