@@ -32,8 +32,8 @@ export const PIXEL_RULES = {
     drop: 0.05,
     dropStrong: 0.1,
     /** Two-tier threshold: a cluster is seeded at zCore and grown through neighbours at zGrow. */
-    zCore: 3.0,
-    zGrow: 2.5,
+    zCore: 2.5,
+    zGrow: 2.0,
     /** Boundary pixels whose own cover is not tea never seed a cluster and join one only at this bar, with the SWIR index dropping too. */
     zEdge: 3.5,
     minClusterPixels: 2,
@@ -53,6 +53,28 @@ export const PIXEL_RULES = {
     scanTo: '04-30',
     /** The pixel's own (raw) NDVI must fall too: neighbours greening up in spring lower the relative value without any cut. */
     rawDrop: 0.04,
+    /**
+     * Within-garden reference: a pixel is also read against the median of its own garden's other pixels (same
+     * variety, aspect and management, so phenology cancels far better than against the neighbours). This is what
+     * makes a partial cut — the usual 1/7 — visible; a whole-garden cut is still caught against the neighbours.
+     */
+    intraMinPixels: 5,
+    intraFloor: 0.015,
+    /**
+     * Cluster statistic: Stouffer z = Σ z / √n over the cluster's pixels. Several adjacent pixels each a little below the
+     * single-pixel bar add up to a clear event; the bar is set from the mirrored-series false-alarm test.
+     */
+    clusterZ: 5,
+    /**
+     * Seasonal baseline (the BFAST / CCDC idea with the data we have): on steep terrain every pixel has its own yearly
+     * pattern (sun angle, shadow, its own phenology). The same pixel's earlier seasons at the same time of year give
+     * that pattern; the scan runs on the deviation from it. 1 = on when earlier seasons are cached.
+     */
+    seasonalBaseline: 1,
+    /** The SWIR cross-check stays on the plain relative NBR: measured on mirrored series, baselining it let more false clusters through without finding more cuts. */
+    baselineNbr: 0,
+    baselineDays: 20,
+    baselineWideDays: 40,
     /** Pruned-pixel NDVI end member: field-calibrated on one case (136/12, Oct 2026) and the literature default as the low bound. */
     ndviPruned: 0.69,
     ndviPrunedDefault: 0.35,
@@ -121,6 +143,8 @@ export interface PixelSeasonFile {
     scan: { from: string; to: string; candidates: number };
     dates: number;
     excludedDates: string[];
+    /** Measured without ground truth by scripts/pixel-validate.mjs (mirrored-series false alarms, simulated-cut detection rate); null until it has run. */
+    validation: Record<string, unknown> | null;
     summary: {
         gardens: number;
         pixels: number;
@@ -157,6 +181,8 @@ function median(xs: number[]): number | null {
 }
 
 interface Step {
+    /** True when the within-garden reference gave the stronger test. */
+    intra?: boolean;
     nBefore: number;
     nAfter: number;
     meanBefore: number | null;
@@ -262,13 +288,21 @@ async function fetchSeries(ee: EE, region: EE, epsg: string, zone: number, pixel
 
 async function main(): Promise<void> {
     const { values } = parseArgs({
-        options: { province: { type: 'string' }, district: { type: 'string' }, neighborhood: { type: 'string' }, season: { type: 'string', default: '2025' }, force: { type: 'boolean', default: false } },
+        options: { province: { type: 'string' }, district: { type: 'string' }, neighborhood: { type: 'string' }, season: { type: 'string', default: '2025' }, force: { type: 'boolean', default: false },
+            // Validation modes (never write the season file): mirrored series = false-alarm estimate; simulated cuts = detection rate.
+            mirror: { type: 'boolean', default: false }, simulate: { type: 'string' }, seed: { type: 'string', default: '1' }, set: { type: 'string' }, tag: { type: 'string', default: 'run' }, 'fetch-only': { type: 'boolean', default: false } },
     });
     if (!values.province || !values.district || !values.neighborhood) {
         console.log(USAGE);
         process.exit(1);
     }
-    const R = PIXEL_RULES;
+    const R = { ...PIXEL_RULES };
+    for (const pair of (values.set ?? '').split(',').filter(Boolean)) {
+        const [k, v] = pair.split('=') as [string, string];
+        if (!(k in R)) throw new Error(`bilinmeyen kural: ${k}`);
+        (R as Record<string, unknown>)[k] = Number(v);
+    }
+    const validating = values.mirror || values.simulate !== undefined;
     const store = new NeighborhoodStore(values.province, values.district, values.neighborhood);
     const meta = store.readMeta();
     if (!meta) throw new Error('meta.json yok; önce harvest çalıştırın.');
@@ -292,10 +326,14 @@ async function main(): Promise<void> {
     const centre = centroid(feature(meta.boundary as Poly)).geometry.coordinates as [number, number];
     const zone = utmZone(centre[0]);
     const epsg = `EPSG:326${zone}`;
+    const latticePath = join(store.dir, 'pruning-pixels', 'lattice.json');
+    const latticeKey = `${gardens.length}|${gardens.map((g) => g.id).join(',').length}|${R.minInsideShare}`;
+    const savedLattice = !values.force && existsSync(latticePath) ? (JSON.parse(readFileSync(latticePath, 'utf8')) as { key: string; pixels: Array<[number, number]>; cells: Record<string, Cell[]>; teaShare: number[] }) : null;
+    const lattice = savedLattice?.key === latticeKey ? savedLattice : null;
     const pixelIndex = new Map<string, number>();
     const pixels: Array<[number, number]> = [];
     const gardenCells = new Map<string, Cell[]>();
-    for (const g of gardens) {
+    for (const g of lattice ? [] : gardens) {
         const gF = feature(g.geometry);
         const [w, s, e, n] = turfBbox(gF);
         const corners = [toUtm(s, w, zone), toUtm(s, e, zone), toUtm(n, w, zone), toUtm(n, e, zone)];
@@ -342,6 +380,14 @@ async function main(): Promise<void> {
         }
         return hits / pts.length;
     });
+    if (lattice) {
+        pixels.push(...lattice.pixels);
+        teaShare.push(...lattice.teaShare);
+        for (const [id, list] of Object.entries(lattice.cells)) gardenCells.set(id, list);
+    } else {
+        mkdirSync(join(store.dir, 'pruning-pixels'), { recursive: true });
+        writeFileSync(latticePath, JSON.stringify({ key: latticeKey, pixels, cells: Object.fromEntries(gardenCells), teaShare }));
+    }
     for (const list of gardenCells.values()) for (const c of list) c.edge = c.insideShare < R.edgeInsideShare && (teaShare[c.pix] as number) < R.teaShareMin;
     console.log(`Sezon ${season}: ${gardens.length} bahçe, ${pixels.length} tekil piksel (${[...gardenCells.values()].flat().filter((c) => c.edge).length} sınır / çay dışı)`);
 
@@ -360,6 +406,7 @@ async function main(): Promise<void> {
         raw = await fetchSeries(ee, ee.Geometry(meta.boundary), epsg, zone, pixels, from, to);
         writeFileSync(cachePath, JSON.stringify(raw));
     } else console.log(`  önbellek kullanıldı: ${raw.dates.length} tarih`);
+    if (values['fetch-only']) return;
     const dates = raw.dates;
 
     // Date screening on the tea pixels' raw NDVI.
@@ -370,8 +417,130 @@ async function main(): Promise<void> {
         return med !== null && vals.length / Math.max(1, teaPix.length) >= R.minDateCoverage && med >= R.collapseNdvi;
     });
     const excludedDates = dates.filter((_, t) => !dateOk[t]);
-    const nd = (i: number, t: number) => (dateOk[t] ? ((raw.ndvi[i] as Array<number | null>)[t] ?? null) : null);
-    const nb = (i: number, t: number) => (dateOk[t] ? ((raw.nbr[i] as Array<number | null>)[t] ?? null) : null);
+    // ── Validation modes: the raw series are altered in memory only ──
+    interface Injection { garden: string; pixels: number[]; cells: Array<[number, number]>; depth: number; kind: 'deep' | 'light'; at: string }
+    const injections: Injection[] = [];
+    if (values.mirror) {
+        // Mirror every pixel around its own season median: rises become drops. Nothing that greens up is a pruning,
+        // so whatever the detector still finds estimates its false alarms (regrowth after last year's cuts makes it an upper bound).
+        for (const arr of [raw.ndvi, raw.nbr]) {
+            for (const row of arr) {
+                const m = median(row.filter((v, t): v is number => v !== null && (dateOk[t] as boolean)));
+                if (m === null) continue;
+                for (let t = 0; t < row.length; t++) if (row[t] !== null) row[t] = r3(2 * m - (row[t] as number));
+            }
+        }
+    }
+    if (values.simulate !== undefined) {
+        // Simulated cuts with known place, date, depth and recovery, injected into gardens where the real run found nothing.
+        let a = Number(values.seed) * 7919 + 13;
+        const random = () => {
+            a |= 0;
+            a = (a + 0x6d2b79f5) | 0;
+            let x = Math.imul(a ^ (a >>> 15), 1 | a);
+            x = (x + Math.imul(x ^ (x >>> 7), 61 | x)) ^ x;
+            return ((x ^ (x >>> 14)) >>> 0) / 4294967296;
+        };
+        const pick = <T>(xs: T[]): T => xs[Math.floor(random() * xs.length)] as T;
+        const realPath = join(outDir, `season-${season}.json`);
+        const quiet = existsSync(realPath) ? new Set((JSON.parse(readFileSync(realPath, 'utf8')) as PixelSeasonFile).gardens.filter((g) => g.verdict === 'none').map((g) => g.id)) : null;
+        const pool = gardens.filter((g) => (gardenCells.get(g.id)?.length ?? 0) >= 1 && (!quiet || quiet.has(g.id)));
+        const taken = new Set<number>();
+        const span = daysBetween(`${year}-10-01`, `${year + 1}-04-10`);
+        for (let n = 0; n < Number(values.simulate) && pool.length; n++) {
+            const g = pool.splice(Math.floor(random() * pool.length), 1)[0] as (typeof gardens)[number];
+            const list = (gardenCells.get(g.id) as Cell[]).filter((c) => !taken.has(c.pix));
+            if (list.length === 0) continue;
+            const size = Math.min(pick([1, 2, 3, 5, 8]), list.length);
+            const chosen = [pick(list)];
+            while (chosen.length < size) {
+                const frontier = list.filter((c) => !chosen.includes(c) && chosen.some((k) => Math.abs(k.e - c.e) <= 10 && Math.abs(k.n - c.n) <= 10));
+                if (frontier.length === 0) break;
+                chosen.push(pick(frontier));
+            }
+            const depth = pick([0.06, 0.1, 0.15, 0.25]);
+            const kind = pick(['deep', 'light'] as const);
+            const at = addDays(`${year}-10-01`, Math.floor(random() * span));
+            // Shape: half the drop on the first days (green debris), full by day 10; deep cuts hold into summer, light ones are back in ~90 days.
+            const shape = (days: number) => Math.min(1, 0.5 + days / 20) * (kind === 'deep' ? (days <= 150 ? 1 : Math.max(0.6, 1 - (days - 150) / 250)) : Math.max(0, 1 - days / 90));
+            for (const c of chosen) {
+                taken.add(c.pix);
+                dates.forEach((d, t) => {
+                    if (d <= at) return;
+                    const f = shape(daysBetween(at, d));
+                    const nv = (raw.ndvi[c.pix] as Array<number | null>)[t];
+                    const bv = (raw.nbr[c.pix] as Array<number | null>)[t];
+                    if (nv !== null && nv !== undefined) (raw.ndvi[c.pix] as Array<number | null>)[t] = r3(nv - depth * f);
+                    if (bv !== null && bv !== undefined) (raw.nbr[c.pix] as Array<number | null>)[t] = r3(bv - 0.8 * depth * f);
+                });
+            }
+            injections.push({ garden: g.id, pixels: chosen.map((c) => c.pix), cells: chosen.map((c) => [c.e, c.n]), depth, kind, at });
+        }
+    }
+    const ndRaw = (i: number, t: number) => (dateOk[t] ? ((raw.ndvi[i] as Array<number | null>)[t] ?? null) : null);
+    // Seasonal baseline per pixel from the earlier seasons' caches: its anomaly against the neighbourhood median at the same time of year.
+    const baseline = pixels.map(() => dates.map(() => 0));
+    const baselineB = pixels.map(() => dates.map(() => 0));
+    let baselineSeasons = 0;
+    let baselineCovered = 0;
+    if (R.seasonalBaseline) {
+        const dayOfSeason = (d: string, y: number) => daysBetween(`${y}-07-01`, d);
+        const history: Array<Array<{ dos: number; a: number }>> = pixels.map(() => []);
+        const historyB: Array<Array<{ dos: number; a: number }>> = pixels.map(() => []);
+        for (const back of [1, 2, 3]) {
+            const py = year - back;
+            const path = join(outDir, `cache-${py}-${String(py + 1).slice(2)}.json`);
+            if (!existsSync(path)) continue;
+            const prev = JSON.parse(readFileSync(path, 'utf8')) as RawSeries;
+            const at = new Map(prev.pixels.map(([pe, pn], i) => [`${pe}_${pn}`, i]));
+            const idx = pixels.map(([pe, pn]) => at.get(`${pe}_${pn}`));
+            const teaIdx = teaPix.map((i) => idx[i]).filter((v): v is number => v !== undefined);
+            prev.dates.forEach((d, t) => {
+                const vals = teaIdx.map((j) => (prev.ndvi[j] as Array<number | null>)[t]).filter((v): v is number => v !== null && v !== undefined);
+                const med = median(vals);
+                if (med === null || vals.length / Math.max(1, teaIdx.length) < R.minDateCoverage || med < R.collapseNdvi) return;
+                const dos = dayOfSeason(d, py);
+                const medB = median(teaIdx.map((j) => (prev.nbr[j] as Array<number | null>)[t]).filter((v): v is number => v !== null && v !== undefined));
+                idx.forEach((j, i) => {
+                    const v = j === undefined ? null : (prev.ndvi[j] as Array<number | null>)[t];
+                    if (v !== null && v !== undefined) (history[i] as Array<{ dos: number; a: number }>).push({ dos, a: v - med });
+                    const b = j === undefined ? null : (prev.nbr[j] as Array<number | null>)[t];
+                    if (b !== null && b !== undefined && medB !== null) (historyB[i] as Array<{ dos: number; a: number }>).push({ dos, a: b - medB });
+                });
+            });
+            baselineSeasons++;
+        }
+        if (baselineSeasons > 0) {
+            dates.forEach((d, t) => {
+                const dos = dayOfSeason(d, year);
+                pixels.forEach((_, i) => {
+                    const h = history[i] as Array<{ dos: number; a: number }>;
+                    let near = h.filter((x) => Math.abs(x.dos - dos) <= R.baselineDays).map((x) => x.a);
+                    if (near.length < 2) near = h.filter((x) => Math.abs(x.dos - dos) <= R.baselineWideDays).map((x) => x.a);
+                    if (near.length < 2) near = h.map((x) => x.a);
+                    const e = near.length >= 2 ? (median(near) as number) : 0;
+                    if (near.length >= 2) baselineCovered++;
+                    // In the mirrored (false-alarm) run the expectation is mirrored with the data.
+                    (baseline[i] as number[])[t] = values.mirror ? -e : e;
+                    const hb = historyB[i] as Array<{ dos: number; a: number }>;
+                    let nearB = hb.filter((x) => Math.abs(x.dos - dos) <= R.baselineDays).map((x) => x.a);
+                    if (nearB.length < 2) nearB = hb.filter((x) => Math.abs(x.dos - dos) <= R.baselineWideDays).map((x) => x.a);
+                    if (nearB.length < 2) nearB = hb.map((x) => x.a);
+                    const eb = nearB.length >= 2 ? (median(nearB) as number) : 0;
+                    (baselineB[i] as number[])[t] = values.mirror ? -eb : eb;
+                });
+            });
+        }
+        console.log(`  mevsimsel taban: ${baselineSeasons} önceki sezon, kapsama %${Math.round((baselineCovered / Math.max(1, pixels.length * dates.length)) * 100)}`);
+    }
+    const nd = (i: number, t: number) => {
+        const v = ndRaw(i, t);
+        return v === null ? null : v - ((baseline[i] as number[])[t] as number);
+    };
+    const nb = (i: number, t: number) => {
+        const v = dateOk[t] ? ((raw.nbr[i] as Array<number | null>)[t] ?? null) : null;
+        return v === null ? null : v - (R.baselineNbr ? ((baselineB[i] as number[])[t] as number) : 0);
+    };
     console.log(`  ${excludedDates.length} tarih dışlandı (çöküş / seyrek kapsama)`);
     const globalRef = { n: dates.map((_, t) => median(teaPix.map((i) => nd(i, t)).filter((v): v is number => v !== null))), b: dates.map((_, t) => median(teaPix.map((i) => nb(i, t)).filter((v): v is number => v !== null))) };
 
@@ -400,6 +569,19 @@ async function main(): Promise<void> {
         return list.map((c) => dates.map((_, t) => (nd(c.pix, t) === null || refN[t] === null ? null : (nd(c.pix, t) as number) - (refN[t] as number))));
     };
     const allRel = gardens.flatMap((g) => relOf(g.id));
+    const intraOf = (list: Cell[]): Array<Array<number | null> | null> =>
+        list.map((c) => {
+            const others = list.filter((o) => !o.edge && (Math.abs(o.e - c.e) > 10 || Math.abs(o.n - c.n) > 10));
+            if (others.length < R.intraMinPixels) return null;
+            return dates.map((_, t) => {
+                const v = nd(c.pix, t);
+                if (v === null) return null;
+                const m = median(others.map((o) => nd(o.pix, t)).filter((x): x is number => x !== null));
+                return m === null ? null : v - m;
+            });
+        });
+    const allIntra = gardens.flatMap((g) => intraOf(gardenCells.get(g.id) ?? [])).filter((x): x is Array<number | null> => x !== null);
+    const populationIntra = new Map<string, { median: number; sigma: number }>();
     const population = new Map<string, { median: number; sigma: number; n: number }>();
     for (const d of candidateDates) {
         const before: [string, string] = [addDays(d, -R.beforeDays), d];
@@ -412,8 +594,16 @@ async function main(): Promise<void> {
         const med = median(deltas) ?? 0;
         const mad = median(deltas.map((x) => Math.abs(x - med))) ?? 0;
         population.set(d, { median: med, sigma: Math.max(R.noiseFloor, 1.4826 * mad), n: deltas.length });
+        const intraDeltas: number[] = [];
+        for (const series of allIntra) {
+            const t = stepTest(dates, series, before, after, R.intraFloor);
+            if (t.nBefore >= R.minBefore && t.nAfter >= R.minAfter && t.delta !== null) intraDeltas.push(t.delta);
+        }
+        const medIn = median(intraDeltas) ?? 0;
+        populationIntra.set(d, { median: medIn, sigma: Math.max(R.intraFloor, 1.4826 * (median(intraDeltas.map((x) => Math.abs(x - medIn))) ?? 0)) });
     }
-    console.log(`  toplum dağılımı: ${candidateDates.length} aday tarih, σ ${[...population.values()].map((x) => x.sigma.toFixed(3)).join(' ')}`);
+    console.log(`  toplum dağılımı: ${candidateDates.length} aday tarih, σ komşu ${[...population.values()].map((x) => x.sigma.toFixed(3)).join(' ')}`);
+    console.log(`  bahçe içi σ ${[...populationIntra.values()].map((x) => x.sigma.toFixed(3)).join(' ')} (${allIntra.length} piksel)`);
 
     for (const g of gardens) {
         const list = gardenCells.get(g.id) ?? [];
@@ -435,16 +625,27 @@ async function main(): Promise<void> {
         const relB = list.map((c) => dates.map((_, t) => (nb(c.pix, t) === null || ref.b[t] === null ? null : (nb(c.pix, t) as number) - (ref.b[t] as number))));
         const validDates = dates.filter((_, t) => dateOk[t] && ref.n[t] !== null);
         const pos = new Map(list.map((c, k) => [`${c.e}_${c.n}`, k]));
+        const relIn = intraOf(list);
+        const seriesOf = (k: number, intra: boolean | undefined) => (intra && relIn[k] ? (relIn[k] as Array<number | null>) : (relN[k] as Array<number | null>));
 
         const clustersAt = (d: string) => {
             const before: [string, string] = [addDays(d, -R.beforeDays), d];
             const after: [string, string] = [d, addDays(d, R.afterDays)];
-            const tests = list.map((_, k) => stepTest(dates, relN[k] as Array<number | null>, before, after, R.noiseFloor));
-            // Effective z: the weaker of the pixel's own-noise z and its distance from the neighbourhood's distribution at this date.
+            // Effective z of a test: the weaker of the pixel's own-noise z and its distance from the population's distribution at this date.
             const popAt = population.get(d);
-            if (popAt) for (const t of tests) if (t.z !== null && t.delta !== null) t.z = Math.min(t.z, -(t.delta - popAt.median) / popAt.sigma);
+            const popInAt = populationIntra.get(d);
+            const usable = (t: Step) => t.nBefore >= R.minBefore && t.nAfter >= R.minAfter && t.z !== null && t.delta !== null;
+            const tests = list.map((_, k): Step => {
+                const inter = stepTest(dates, relN[k] as Array<number | null>, before, after, R.noiseFloor);
+                if (popAt && inter.z !== null && inter.delta !== null) inter.z = Math.min(inter.z, -(inter.delta - popAt.median) / popAt.sigma);
+                if (!relIn[k]) return inter;
+                const intra = stepTest(dates, relIn[k] as Array<number | null>, before, after, R.intraFloor);
+                if (popInAt && intra.z !== null && intra.delta !== null) intra.z = Math.min(intra.z, -(intra.delta - popInAt.median) / popInAt.sigma);
+                // The stronger of the two references decides: within-garden for a partial cut, neighbours for a whole-garden one.
+                return usable(intra) && (!usable(inter) || (intra.z as number) > (inter.z as number)) ? { ...intra, intra: true } : inter;
+            });
             const nbrDelta = list.map((_, k) => stepTest(dates, relB[k] as Array<number | null>, before, after, R.noiseFloor).delta);
-            const rawDelta = list.map((c) => stepTest(dates, dates.map((_, t) => nd(c.pix, t)), before, after, R.noiseFloor).delta);
+            const rawDelta = list.map((c) => stepTest(dates, dates.map((_, t) => ndRaw(c.pix, t)), before, after, R.noiseFloor).delta);
             const enoughAt = (k: number) => { const t = tests[k] as Step; return t.nBefore >= R.minBefore && t.nAfter >= R.minAfter && t.delta !== null && t.delta <= -R.drop && rawDelta[k] !== null && (rawDelta[k] as number) <= -R.rawDrop; };
             const isCore = (k: number) => enoughAt(k) && ((tests[k] as Step).z ?? 0) >= R.zCore && !(list[k] as Cell).edge && (nbrDelta[k] === null || (nbrDelta[k] as number) <= 0);
             const canGrow = (k: number) => enoughAt(k) && ((tests[k] as Step).z ?? 0) >= ((list[k] as Cell).edge ? R.zEdge : R.zGrow) && (!(list[k] as Cell).edge || (nbrDelta[k] !== null && (nbrDelta[k] as number) < 0));
@@ -471,7 +672,8 @@ async function main(): Promise<void> {
                 const lone = group.length === 1 && ((tests[group[0] as number] as Step).delta as number) <= -R.dropStrong && ((tests[group[0] as number] as Step).z ?? 0) >= R.lonePixelZ;
                 if (group.length >= R.minClusterPixels || lone) groups.push(group);
             }
-            const score = (grp: number[]) => grp.reduce((sum, k) => sum + ((tests[k] as Step).z ?? 0), 0);
+            const score = (grp: number[]) => grp.reduce((sum, k) => sum + ((tests[k] as Step).z ?? 0), 0) / Math.sqrt(grp.length);
+            for (let i = groups.length - 1; i >= 0; i--) if (score(groups[i] as number[]) < R.clusterZ) groups.splice(i, 1);
             groups.sort((a, b) => score(b) - score(a));
             return { tests, nbrDelta, groups, isCore, score: groups[0] ? score(groups[0]) : 0, before, after };
         };
@@ -494,13 +696,13 @@ async function main(): Promise<void> {
         const at = clustersAt(best.date);
         const clusterOf = new Map<number, number>();
         at.groups.forEach((grp, i) => grp.forEach((k) => clusterOf.set(k, i)));
-        const absBefore = list.map((c) => mean(dates.map((d, t) => (d >= at.before[0] && d < at.before[1] ? nd(c.pix, t) : null)).filter((v): v is number => v !== null)));
+        const absBefore = list.map((c) => mean(dates.map((d, t) => (d >= at.before[0] && d < at.before[1] ? ndRaw(c.pix, t) : null)).filter((v): v is number => v !== null)));
         const fractionAt = (k: number, endMember: number) => {
             const span = absBefore[k] !== null ? Math.max(0.15, (absBefore[k] as number) - endMember) : null;
             return span === null ? 0 : Math.min(1, Math.max(0, -((at.tests[k] as Step).delta as number) / span));
         };
         const meanSeries = (ks: number[]) => dates.map((_, t) => {
-            const vals = ks.map((k) => (relN[k] as Array<number | null>)[t]).filter((v): v is number => v !== null && v !== undefined);
+            const vals = ks.map((k) => seriesOf(k, (at.tests[k] as Step).intra)[t]).filter((v): v is number => v !== null && v !== undefined);
             return vals.length >= Math.max(1, ks.length / 2) ? (mean(vals) as number) : null;
         });
         base.best = { date: best.date, lastBefore: best.lastBefore, score: best.score };
@@ -610,13 +812,14 @@ async function main(): Promise<void> {
     const out: PixelSeasonFile = {
         season,
         generatedAt: new Date().toISOString(),
-        method: 'Piksel taraması: her bahçenin üzerine Sentinel-2’nin 10 m ağı serilir; pikseller 300 m çevredeki diğer bahçe piksellerine göreli okunur, sezonun her temiz sahnesi aday değişim tarihi olarak denenir, çekirdek (z ≥ 3) pikseller komşularıyla (z ≥ 2,5) kümelenir. Her aday tarihte mahalledeki tüm bahçe piksellerinin değişim dağılımı çıkarılır; piksel hem kendi gürültüsünden hem bu dağılımdan ayrışmalıdır (toplum kalibrasyonu). Pikselin kendi (ham) NDVI’si de düşmüş olmalıdır (komşuların bahar yeşillenmesi budama değildir). Sınır pikselleri çekirdek olamaz; kümeler toparlanma hızına göre derin budama / hafif budama / geçici düşüş olarak ayrılır. Kalibre edilmedi; çok-sensör kararını değiştirmez.',
+        method: 'Piksel taraması: her bahçenin üzerine Sentinel-2’nin 10 m ağı serilir; pikseller hem 300 m çevredeki diğer bahçe piksellerine hem de kendi bahçesinin diğer piksellerine göreli okunur (kısmi kesim bahçe içinde, bütün bahçe kesimi komşulara göre ayrışır), sezonun her temiz sahnesi aday değişim tarihi olarak denenir, çekirdek (z ≥ 3) pikseller komşularıyla (z ≥ 2,5) kümelenir. Her aday tarihte mahalledeki tüm bahçe piksellerinin değişim dağılımı çıkarılır; piksel hem kendi gürültüsünden hem bu dağılımdan ayrışmalıdır (toplum kalibrasyonu). Her pikselin kendi mevsimsel örüntüsü önceki sezonlarından çıkarılır (güneş açısı, gölge, kendi fenolojisi) ve tarama bu örüntüden sapma üzerinde yapılır. Pikselin kendi (ham) NDVI’si de düşmüş olmalıdır (komşuların bahar yeşillenmesi budama değildir). Sınır pikselleri çekirdek olamaz; kümeler toparlanma hızına göre derin budama / hafif budama / geçici düşüş olarak ayrılır. Kalibre edilmedi; çok-sensör kararını değiştirmez.',
         rules: R,
         epsg,
         window: [from, to],
         scan: { from: scanFrom, to: scanTo, candidates: candidateDates.length },
         dates: dates.length,
         excludedDates,
+        validation: existsSync(join(outDir, `validation-${season}.json`)) ? (JSON.parse(readFileSync(join(outDir, `validation-${season}.json`), 'utf8')) as Record<string, unknown>) : null,
         summary: {
             gardens: results.length,
             pixels: pixels.length,
@@ -628,6 +831,35 @@ async function main(): Promise<void> {
         },
         gardens: results,
     };
+    if (validating) {
+        const counted = (g: PixelGarden) => g.verdict === 'deep' || g.verdict === 'light' || g.verdict === 'pending';
+        const byId = new Map(results.map((g) => [g.id, g]));
+        const trials = injections.map((inj) => {
+            const g = byId.get(inj.garden) as PixelGarden;
+            const detected = counted(g);
+            const dateHit = detected && g.best !== null && (g.best.lastBefore ?? '') <= inj.at && inj.at < g.best.date;
+            const flagged = new Set(g.px.filter((x) => x[5] > 0).map((x) => `${x[0]}_${x[1]}`));
+            const pixelRecall = inj.cells.filter(([e, n]) => flagged.has(`${e}_${n}`)).length / inj.cells.length;
+            const main = g.mainCluster !== null ? g.clusters[g.mainCluster] : null;
+            return { ...inj, pixels: inj.cells.length, cells: undefined, verdict: g.verdict, detected, dateHit, pixelRecall: r3(pixelRecall), located: detected && pixelRecall >= 0.5, kindHit: detected && main?.kind === inj.kind, areaM2: g.prunedM2 };
+        });
+        const injected = new Set(injections.map((x) => x.garden));
+        const others = results.filter((g) => !injected.has(g.id));
+        const validation = {
+            season,
+            mode: values.mirror ? 'mirror' : 'simulate',
+            tag: values.tag,
+            overrides: values.set ?? '',
+            gardens: results.length,
+            countedOutsideInjections: others.filter(counted).length,
+            byVerdict,
+            trials,
+        };
+        writeFileSync(join(outDir, `validation-${season}-${values.tag}.json`), JSON.stringify(validation));
+        const hit = trials.filter((x) => x.detected && x.dateHit && x.located).length;
+        console.log(`VALIDATION ${JSON.stringify({ mode: validation.mode, tag: values.tag, set: validation.overrides, counted: results.filter(counted).length, countedOutside: validation.countedOutsideInjections, trials: trials.length, detected: trials.filter((x) => x.detected).length, full: hit })}`);
+        return;
+    }
     writeFileSync(join(outDir, `season-${season}.json`), JSON.stringify(out));
     console.log(`Karar: ${verdicts.map((v) => `${v} ${byVerdict[v]}`).join(' · ')}`);
     console.log(`Alan: derin ${out.summary.areaM2.deep} m² · hafif ${out.summary.areaM2.light} m² · bekleyen ${out.summary.areaM2.pending} m² · çok-sensörün görmediği yeni bulgu ${out.summary.newFinds} bahçe`);
