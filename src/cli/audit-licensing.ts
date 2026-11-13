@@ -1,9 +1,11 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import { area as turfArea, bbox as turfBbox, buffer, feature, featureCollection, intersect } from '@turf/turf';
 import type { Feature, FeatureCollection, MultiPolygon, Polygon } from 'geojson';
 import { AUDIT_RULES, decide, readTitle, teaStateOf, type AuditDecision, type AuditFlag, type BuildingState, type Confidence, type DecisionResult, type TeaState, type TitleReading } from '../audit/decision.ts';
+import { buildDemoLicences, DEMO_LICENCE_RULES, type DemoLicence } from '../audit/demo-licences.ts';
+import { parseFieldNotes } from '../audit/field-notes.ts';
 import { parcelKml } from '../audit/kml.ts';
 import { detectTeaEvidence, EVIDENCE_RULES, type EvidenceModel, type ParcelTeaEvidence } from '../audit/tea-evidence.ts';
 import { evaluate, initEarthEngine } from '../ee/session.ts';
@@ -22,7 +24,10 @@ Arazi tespit kararı (ruhsatlandırma altında ayrı modül; envanter, ruhsat ka
 her parsel için üç kaynak yan yana konur ve tek karara bağlanır.
   1. TKGM      : parsel geometrisi ve tapu niteliği (kütüphanede yoksa --parcels ile ada/parsel üzerinden TEK sorgu)
   2. Tespit    : nitelikten bağımsız çay tespiti (konum özniteliği yok, kar maskeli) + yapı izleri (Microsoft bina izleri)
-  3. ÇAYKUR    : ruhsat kaydı (licence-audit/caykur-licences.csv varsa o, yoksa DEMO ruhsat kaydı)
+  3. ÇAYKUR    : ruhsat kaydı (licence-audit/caykur-licences.csv varsa o, yoksa DEMO ruhsat kaydı: demo müstahsil kaydının
+                 ruhsatları + kaydın ulaşmadığı parsellere genişletme; çayın çoğu ruhsatlı, kaçak/hatalı/çaysız ruhsat istisna)
+Arazi notları: licence-audit/field-notes.csv (ada;parsel;nitelik;alan_m2;arazi_notu) — "çay var", "ev var", "kaçak" notları saha gözlemi sayılır;
+               listedeki eksik parseller TKGM'den alınır. Elle sabitleme: licence-audit/demo-pins.json  { "227/5": false }
 Karar: ÇAY ARAZİSİ · ÇAYKUR RUHSATLANDIRMA HATASI · RUHSATSIZ ÇAY ARAZİSİ (+ diğer beş birleşim ve "inceleme gerekli").
 Eksper teyidi: licence-audit/confirmations.json  [{ "block": "227", "parcel": "5", "tea": true, "source": "...", "note": "...", "date": "2026-11-12" }]
 Çıktı: licence-audit/audit.json, licence-audit/kml/*.kml (Google Earth)
@@ -55,7 +60,8 @@ export interface AuditParcel {
     };
     building: { state: BuildingState; count: number; insideM2: number; source: string };
     licence: { licensed: boolean; areaM2: number | null; codes: string[]; source: 'demo' | 'caykur' | 'none' };
-    confirmation: { tea: boolean; source: string; note: string; date: string } | null;
+    /** Ground observation by a person (expert confirmation or field note); a null side was not observed. */
+    confirmation: { tea: boolean | null; building: boolean | null; sparse: boolean; source: string; note: string; date: string } | null;
     decision: AuditDecision;
     leaning: DecisionResult['leaning'];
     confidence: Confidence;
@@ -71,6 +77,10 @@ export interface AuditFile {
     evidenceRules: typeof EVIDENCE_RULES;
     model: EvidenceModel;
     licenceSource: 'demo' | 'caykur';
+    /** How the demo register was put together (absent with the real list). */
+    demoLicences: { rules: typeof DEMO_LICENCE_RULES; byOrigin: Record<string, number>; byScenario: Record<string, number>; note: string } | null;
+    /** Field notes against the satellite reading: the only ground check there is so far. */
+    fieldCheck: { notes: number; teaNoted: number; teaNotedDetected: number; teaNotedInconclusive: number; teaNotedMissed: number; titleMismatch: number } | null;
     buildingSource: string;
     summary: {
         parcels: number;
@@ -104,8 +114,8 @@ function reasonOf(p: Omit<AuditParcel, 'reason' | 'geometry'>): string {
     const title = `Tapu niteliği “${p.nature}” (${p.title.tea ? 'çay var' : 'çay yok'})`;
     const licence = p.licence.licensed ? `ÇAYKUR kaydında ruhsatlı (${p.licence.codes.join(', ')}${p.licence.areaM2 ? `, ${Math.round(p.licence.areaM2)} m²` : ''}${p.licence.source === 'demo' ? ', DEMO kayıt' : ''})` : `ÇAYKUR kaydında ruhsat yok${p.licence.source === 'demo' ? ' (DEMO kayıt)' : ''}`;
     const ground =
-        p.confirmation !== null
-            ? `eksper teyidi: ${p.confirmation.tea ? 'çay var' : 'çay yok'} (${p.confirmation.source}); uydu tespiti parselin ${pct(d.teaShare)} kadarında çay görüyor`
+        p.confirmation !== null && p.confirmation.tea !== null
+            ? `saha gözlemi: ${p.confirmation.tea ? (p.confirmation.sparse ? 'çay var, seyrek' : 'çay var') : 'çay yok'} (${p.confirmation.source}); uydu tespiti parselin ${pct(d.teaShare)} kadarında çay görüyor`
             : d.tea === 'not_assessable'
               ? `parsel 10 m piksel ağı için çok küçük (${d.fullPixels} tam piksel), uydu ile değerlendirilemiyor`
               : d.tea === 'inconclusive'
@@ -117,6 +127,7 @@ function reasonOf(p: Omit<AuditParcel, 'reason' | 'geometry'>): string {
     if (p.flags.includes('detectors_disagree')) notes.push(`envanter tespiti farklı söylüyor (${pct(d.inventoryShare)})`);
     if (p.flags.includes('public_land')) notes.push('tapu kamu arazisi');
     if (p.flags.includes('large_parcel')) notes.push('parsel çok büyük: içindeki çay cebi parsel payıyla ölçülemez, bahçe sınırıyla bakılmalı');
+    if (p.confirmation?.building) notes.push('saha gözlemi: parselde ev var');
     if (p.flags.includes('licence_unverified')) notes.push('DEMO ruhsat kaydı bu parseli kapsamıyor: “ruhsat yok” bilgisi gerçek ÇAYKUR listesiyle doğrulanmalı');
     const tail = p.decision === 'needs_review' ? ` Eğilim: ${DECISION_LABEL[p.leaning]}.` : '';
     return `${title}; ${licence}; ${ground}.${notes.length ? ` Not: ${notes.join('; ')}.` : ''}${tail}`;
@@ -152,6 +163,11 @@ async function main(): Promise<void> {
     // ── 1. TKGM: the library, plus the parcels asked for by number that it does not hold yet (one query each) ──
     let parcels = store.loadParcels().filter((p) => p.properties.inTargetNeighborhood);
     const requested = (values.parcels ?? '').split(',').map((s) => s.trim()).filter(Boolean).map((s) => s.split('/') as [string, string]);
+    // Field notes: every parcel on the list belongs in the audit, so the ones the library lacks are fetched too.
+    const notesPath = join(outDir, 'field-notes.csv');
+    const fieldNotes = existsSync(notesPath) ? parseFieldNotes(readFileSync(notesPath, 'utf8')) : [];
+    const notesDate = existsSync(notesPath) ? statSync(notesPath).mtime.toISOString().slice(0, 10) : '';
+    for (const n of fieldNotes) if (!requested.some(([b, p]) => b === n.block && p === n.parcel)) requested.push([n.block, n.parcel]);
     const missing = requested.filter(([b, n]) => !parcels.some((p) => p.properties.block === b && p.properties.parcel === n));
     if (missing.length) {
         const neighborhoodId = parcels[0]?.properties.neighborhoodId;
@@ -244,15 +260,50 @@ async function main(): Promise<void> {
         }
     }
     const confirmationsPath = join(outDir, 'confirmations.json');
-    const confirmations = existsSync(confirmationsPath) ? readJson<Array<{ block: string; parcel: string; tea: boolean; source: string; note?: string; date: string }>>(confirmationsPath) : [];
+    type Confirmation = { block: string; parcel: string; tea: boolean | null; building?: boolean | null; sparse?: boolean; source: string; note?: string; date: string };
+    const confirmations = existsSync(confirmationsPath) ? readJson<Confirmation[]>(confirmationsPath) : [];
+    // A field note that speaks of tea or of a house is an observation; an expert confirmation for the same parcel stands above it.
+    for (const n of fieldNotes) {
+        if (n.tea === null && n.building === null) continue;
+        const own = confirmations.find((c) => String(c.block) === n.block && String(c.parcel) === n.parcel);
+        if (own) {
+            own.building ??= n.building;
+            own.sparse ??= n.sparse;
+            continue;
+        }
+        confirmations.push({ block: n.block, parcel: n.parcel, tea: n.tea, building: n.building, sparse: n.sparse, source: 'arazi notu', note: n.note, date: notesDate });
+    }
     const inventoryPath = join(store.dir, 'parcels-tea.geojson');
     const inventoryShare = new Map<string, number | null>(existsSync(inventoryPath) ? readJson<FeatureCollection<Poly, { key: string; teaShare: number | null }>>(inventoryPath).features.map((f) => [f.properties.key, f.properties.teaShare]) : []);
 
     // Scope: with the demo register only the parcels it was built on can be called licensed or not; the rest of the
     // library is left out, except parcels asked for by number (their "no licence" is marked unverified).
-    const covered = new Set(inventoryShare.keys());
-    const scope = licenceSource === 'caykur' ? parcels : parcels.filter((p) => covered.has(p.properties.key) || kept.has(`${p.properties.block}/${p.properties.parcel}`));
-    console.log(`Denetim kapsamı: ${scope.length} parsel${licenceSource === 'demo' ? ` (DEMO ruhsat kaydının kapsadığı ${covered.size} parsel + ada/parsel ile istenenler)` : ''}`);
+    const confirmationOf = (block: string, parcel: string) => confirmations.find((c) => String(c.block) === block && String(c.parcel) === parcel) ?? null;
+    // DEMO register: the producer register's licences, extended to every parcel of the library (see demo-licences.ts).
+    let demoLicences: DemoLicence[] | null = null;
+    if (licenceSource === 'demo') {
+        const pinsPath = join(outDir, 'demo-pins.json');
+        const pins = existsSync(pinsPath) ? readJson<Record<string, boolean>>(pinsPath) : {};
+        demoLicences = buildDemoLicences(
+            parcels.map((p) => {
+                const props = p.properties;
+                const id = `${props.block}/${props.parcel}`;
+                const e = evidenceByKey.get(props.key) ?? null;
+                const conf = confirmationOf(props.block, props.parcel);
+                const titleTea = readTitle(props.nature).tea;
+                // Same reading as the decision takes when the detection is not conclusive: the side the share is nearer to.
+                const readable = e !== null && e.teaShare !== null;
+                const groundTea = conf && conf.tea !== null ? conf.tea : readable ? (e.teaShare as number) >= (AUDIT_RULES.teaPresentShare + AUDIT_RULES.teaAbsentShare) / 2 : titleTea;
+                return { key: props.key, block: props.block, parcel: props.parcel, parcelAreaM2: props.geometryAreaM2, titleTea, groundTea, teaAreaM2: e?.teaAreaM2 ?? null, registry: licenceByParcel.get(id) ?? null, notedUnlicensed: fieldNotes.some((n) => n.block === props.block && n.parcel === props.parcel && n.unlicensed), pinned: pins[id] ?? null };
+            }),
+        );
+        licenceByParcel.clear();
+        for (const l of demoLicences) if (l.licensed) licenceByParcel.set(`${l.block}/${l.parcel}`, { areaM2: l.areaM2 ?? 0, codes: l.codes });
+        writeFileSync(join(outDir, 'demo-licences.json'), JSON.stringify(demoLicences));
+    }
+    const tally = (items: string[]) => items.reduce<Record<string, number>>((h, x) => ((h[x] = (h[x] ?? 0) + 1), h), {});
+    const scope = parcels;
+    console.log(`Denetim kapsamı: ${scope.length} parsel${demoLicences ? ` · DEMO ruhsat kaydı: ${JSON.stringify(tally(demoLicences.map((l) => l.scenario)))} · kaynak ${JSON.stringify(tally(demoLicences.map((l) => l.origin)))}` : ''}`);
 
     // ── 4–6. Per parcel: read the title, compare, decide ──
     const R = AUDIT_RULES;
@@ -277,9 +328,10 @@ async function main(): Promise<void> {
                 count++;
             } else if (intersect(featureCollection([near, b as Feature<Poly>]))) touching++;
         });
-        const buildingState: BuildingState = count > 0 ? 'inside' : touching > 0 ? 'boundary' : 'none';
+        const conf = confirmationOf(props.block, props.parcel);
+        // A person who saw the house stands above a footprint dataset that misses small houses under trees.
+        const buildingState: BuildingState = conf?.building === true ? 'inside' : count > 0 ? 'inside' : touching > 0 ? 'boundary' : 'none';
         const lic = licenceByParcel.get(`${props.block}/${props.parcel}`) ?? null;
-        const conf = confirmations.find((c) => String(c.block) === props.block && String(c.parcel) === props.parcel) ?? null;
         const title = readTitle(props.nature);
         const state = teaStateOf(e?.teaShare ?? null, e?.teaAreaM2 ?? null, fullPixels, props.geometryAreaM2);
         const result = decide({
@@ -287,8 +339,8 @@ async function main(): Promise<void> {
             licensed: !!lic,
             licensedAreaM2: lic?.areaM2 ?? null,
             parcelAreaM2: props.geometryAreaM2,
-            licenceVerified: licenceSource === 'caykur' || covered.has(props.key),
-            tea: { state, share: e?.teaShare ?? null, areaM2: e?.teaAreaM2 ?? null, probability: e?.teaProbability ?? null, fullPixels, beyondTraining: e?.beyondTraining ?? false, inventoryShare: inventoryShare.get(props.key) ?? null, confirmed: conf ? conf.tea : null },
+            licenceVerified: true,
+            tea: { state, share: e?.teaShare ?? null, areaM2: e?.teaAreaM2 ?? null, probability: e?.teaProbability ?? null, fullPixels, beyondTraining: e?.beyondTraining ?? false, inventoryShare: inventoryShare.get(props.key) ?? null, confirmed: conf ? conf.tea : null, sparse: conf?.sparse ?? false },
             building: buildingState,
         });
         const base: Omit<AuditParcel, 'reason' | 'geometry'> = {
@@ -317,7 +369,7 @@ async function main(): Promise<void> {
             },
             building: { state: buildingState, count: count + touching, insideM2: Math.round(insideM2), source: 'Microsoft Global ML Building Footprints' },
             licence: { licensed: !!lic, areaM2: lic ? Math.round(lic.areaM2) : null, codes: lic?.codes ?? [], source: lic ? licenceSource : licenceSource },
-            confirmation: conf ? { tea: conf.tea, source: conf.source, note: conf.note ?? '', date: conf.date } : null,
+            confirmation: conf ? { tea: conf.tea, building: conf.building ?? null, sparse: conf.sparse ?? false, source: conf.source, note: conf.note ?? '', date: conf.date } : null,
             ...result,
         };
         return { ...base, reason: reasonOf(base), geometry: p.geometry as Poly };
@@ -331,7 +383,20 @@ async function main(): Promise<void> {
         if (r.decision === 'needs_review') byLeaning[r.leaning] = (byLeaning[r.leaning] ?? 0) + 1;
     }
     const known = rows.filter((r) => r.consistency.tea !== 'unknown');
-    const groundTea = (r: AuditParcel) => (r.confirmation ? r.confirmation.tea : r.detection.tea === 'present');
+    const groundTea = (r: AuditParcel) => (r.confirmation && r.confirmation.tea !== null ? r.confirmation.tea : r.detection.tea === 'present');
+    // Field notes that say "tea" against what the satellite reads on its own, and list titles against TKGM titles.
+    const noted = fieldNotes.map((n) => ({ n, r: rows.find((x) => x.block === n.block && x.parcel === n.parcel) })).filter((x): x is { n: (typeof fieldNotes)[number]; r: AuditParcel } => !!x.r);
+    const teaNoted = noted.filter((x) => x.n.tea === true);
+    const fieldCheck: AuditFile['fieldCheck'] = fieldNotes.length
+        ? {
+              notes: noted.length,
+              teaNoted: teaNoted.length,
+              teaNotedDetected: teaNoted.filter((x) => x.r.detection.tea === 'present').length,
+              teaNotedInconclusive: teaNoted.filter((x) => x.r.detection.tea === 'inconclusive' || x.r.detection.tea === 'not_assessable').length,
+              teaNotedMissed: teaNoted.filter((x) => x.r.detection.tea === 'absent').length,
+              titleMismatch: noted.filter((x) => readTitle(x.n.nature).tea !== x.r.title.tea).length,
+          }
+        : null;
     // Only the buildings near an audited parcel that matters go to the site (the rest stay in the cache file).
     const out: AuditFile = {
         generatedAt: new Date().toISOString(),
@@ -340,6 +405,15 @@ async function main(): Promise<void> {
         evidenceRules: EVIDENCE_RULES,
         model: m,
         licenceSource,
+        demoLicences: demoLicences
+            ? {
+                  rules: DEMO_LICENCE_RULES,
+                  byOrigin: tally(demoLicences.map((l) => l.origin)),
+                  byScenario: tally(demoLicences.map((l) => l.scenario)),
+                  note: 'DEMO ruhsat kaydı: demo müstahsil kaydındaki ruhsatlar korunur, kaydın ulaşmadığı parsellere genişletilir. Sahada çay olan parsellerin çoğu ruhsatlıdır; ruhsatsız çay, çaysız ruhsat ve hatalı ruhsat istisnadır. Kayıt, denetimin kullandığı tespitten üretildiği için sayılar mekanizmayı gösterir, gerçek durumu değil.',
+              }
+            : null,
+        fieldCheck,
         buildingSource: 'Microsoft Global ML Building Footprints (Earth Engine topluluk kataloğu)',
         summary: {
             parcels: rows.length,
@@ -377,6 +451,8 @@ async function main(): Promise<void> {
     console.log(`Karar: ${decisions.map((d) => `${DECISION_LABEL[d]} ${out.summary.byDecision[d]}`).join(' · ')}`);
     console.log(`İncelemedekilerin eğilimi: ${JSON.stringify(byLeaning)}`);
     console.log(`Tapu × saha: çay/çay ${out.summary.titleVsGround.titleTeaGroundTea} · tapuda çay, sahada yok ${out.summary.titleVsGround.titleTeaGroundNone} · tapuda yok, sahada çay ${out.summary.titleVsGround.titleOtherGroundTea} · ikisinde de yok ${out.summary.titleVsGround.titleOtherGroundNone} · bilinmiyor ${out.summary.titleVsGround.unknown}`);
+    if (fieldCheck) console.log(`Arazi notları: ${fieldCheck.notes} parsel · "çay var" denen ${fieldCheck.teaNoted}: uydu da çay görüyor ${fieldCheck.teaNotedDetected}, kararsız ${fieldCheck.teaNotedInconclusive}, görmüyor ${fieldCheck.teaNotedMissed} · liste niteliği TKGM ile uyuşmayan ${fieldCheck.titleMismatch}`);
+    for (const x of noted) console.log(`  ${`${x.r.block}/${x.r.parcel}`.padEnd(7)} ${x.r.nature.padEnd(26)} not: ${(x.n.note || '—').padEnd(32)} uydu ${x.r.detection.teaShare === null ? '—' : `%${Math.round(x.r.detection.teaShare * 100)}`} (${x.r.detection.tea}) · ${x.r.licence.licensed ? 'ruhsatlı' : 'ruhsatsız'} → ${DECISION_LABEL[x.r.decision]} (${x.r.confidence})`);
     console.log(`Ruhsat kaynağı: ${licenceSource === 'demo' ? 'DEMO ruhsat kaydı (gerçek ÇAYKUR listesi verilmedi)' : 'ÇAYKUR listesi'} · işaretler ${JSON.stringify(flags)}`);
     console.log(`Çıktı: ${join(outDir, 'audit.json')}`);
 }

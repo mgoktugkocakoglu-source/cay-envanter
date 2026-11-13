@@ -91,7 +91,7 @@ export interface DecisionInput {
     /** False when the register at hand does not cover this parcel (demo register): "no licence" is then unverified. */
     licenceVerified: boolean;
     parcelAreaM2: number;
-    tea: { state: TeaState; share: number | null; areaM2: number | null; probability: number | null; fullPixels: number; beyondTraining: boolean; inventoryShare: number | null; confirmed: boolean | null };
+    tea: { state: TeaState; share: number | null; areaM2: number | null; probability: number | null; fullPixels: number; beyondTraining: boolean; inventoryShare: number | null; confirmed: boolean | null; sparse?: boolean };
     building: BuildingState;
 }
 export interface DecisionResult {
