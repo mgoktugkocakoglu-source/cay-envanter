@@ -52,7 +52,7 @@ function main(): void {
     const outDir = join(store.dir, 'drone');
     const evidenceDir = join(outDir, 'evidence', id);
     mkdirSync(evidenceDir, { recursive: true });
-    const images = readdirSync(join(values.project, 'out')).filter((f) => /\.jpe?g$/i.test(f));
+    const images = readdirSync(join(values.project, 'out')).filter((f) => /\.(jpe?g|mp4)$/i.test(f));
     for (const f of images) copyFileSync(join(values.project, 'out', f), join(evidenceDir, f));
     writeFileSync(join(outDir, 'verification.json'), JSON.stringify(file));
 
@@ -64,7 +64,7 @@ function main(): void {
         if (p.discrepancy) console.log(`  Uyuşmazlık: ${p.discrepancy}`);
         console.log(`  Öneri: ${p.action}`);
     }
-    console.log(`Kanıt kareleri: ${images.length} → ${evidenceDir}`);
+    console.log(`Kanıt kareleri ve klip: ${images.length} → ${evidenceDir}`);
     console.log(`Çıktı: ${join(outDir, 'verification.json')}`);
 }
 

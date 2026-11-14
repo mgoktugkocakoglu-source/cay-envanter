@@ -67,8 +67,12 @@ export interface DroneAnalysisParcel {
     visible: [number, number];
     trackedFrames: number;
     frames: DroneFrame[];
+    /** Outline per tracked instant (video seconds), for drawing it over the playing clip. */
+    track: Array<{ t: number; polygon: Array<[number, number]> }>;
     outline: { t: number; frame: [number, number]; polygon: Array<[number, number]>; reference: string; kind: OutlineKind };
 }
+/** The part of the video the parcels are on, re-encoded for the site; `start` is its offset in the source video. */
+export type DroneClip = { file: string; start: number; end: number; width: number; height: number; bytes: number };
 export interface DroneCapture {
     width: number;
     height: number;
@@ -104,6 +108,7 @@ export interface DroneAnalysisFile {
     project: { id: string; title: string; province: string; district: string; neighborhood: string; capturedAt: string; capturedAtNote: string; source: { kind: DroneSourceKind; file: string; origin: string; georeference: Georeference }; trainingNote: string };
     rules: Record<string, number>;
     capture: DroneCapture;
+    clip: DroneClip | null;
     validation: DroneValidation;
     parcels: DroneAnalysisParcel[];
 }
@@ -148,6 +153,7 @@ export interface DroneVerificationParcel extends DroneParcelRecord {
     video: { visible: [number, number]; trackedFrames: number; match: { t: number; inliers: number; keypoints: number } };
     outline: DroneAnalysisParcel['outline'];
     frames: DroneFrame[];
+    track: DroneAnalysisParcel['track'];
     notes: string[];
 }
 
@@ -157,6 +163,7 @@ export interface DroneVerificationFile {
     rules: typeof DRONE_RULES & Record<string, number>;
     sources: DroneSource[];
     capture: DroneCapture;
+    clip: DroneClip | null;
     /** What this source can and cannot support, in plain statements. */
     suitability: Array<{ topic: string; verdict: 'ok' | 'limited' | 'no'; text: string }>;
     validation: DroneValidation & { usable: boolean };
@@ -260,6 +267,7 @@ export function buildDroneVerification(input: { analysis: DroneAnalysisFile; rev
             video: { visible: a.visible, trackedFrames: a.trackedFrames, match: a.match },
             outline: a.outline,
             frames: a.frames,
+            track: a.track ?? [],
             notes,
         });
     }
@@ -269,6 +277,7 @@ export function buildDroneVerification(input: { analysis: DroneAnalysisFile; rev
         rules: { ...DRONE_RULES, ...analysis.rules },
         sources: [source],
         capture: analysis.capture,
+        clip: analysis.clip ?? null,
         suitability: suitabilityOf(analysis.capture, v, usable),
         validation: { ...v, usable },
         licenceSource: input.licenceSource,

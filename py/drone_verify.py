@@ -16,6 +16,7 @@ no areas and no cadastral boundary; those need RTK-georeferenced orthophotos (se
 """
 import json
 import os
+import subprocess
 import sys
 
 import cv2
@@ -27,7 +28,9 @@ CLASSES = ['tea', 'other_vegetation', 'built']
 # video are too alike to tea at this resolution to stand as a class of their own.
 LABEL_CLASS = {'tea': 'tea', 'woody': 'other_vegetation', 'low_other': 'other_vegetation', 'built': 'built'}
 RULES = {
-    'trackStepS': 0.5,
+    'trackStepS': 0.25,
+    # Seconds of video kept before and after the tracked range in the clip the site plays.
+    'clipMarginS': 2.0,
     'minInliers': 40,
     # Keypoints for tracking come from the outline's bounding box widened by this share of its size.
     'trackPad': 0.8,
@@ -320,6 +323,8 @@ def main():
             'otherShares': {c: round(float(np.median([fr['shares'][c] for fr in frames])), 3) for c in ['other_vegetation', 'built', 'uncertain']},
             'match': {'t': p['refT'], 'inliers': p['refInliers'], 'keypoints': p['stillKeypoints']},
             'visible': p['visible'], 'trackedFrames': len(p['track']), 'frames': frames,
+            # Outline per tracked instant (video seconds), for drawing it over the playing clip.
+            'track': [{'t': t, 'polygon': [[round(float(x), 1), round(float(yy), 1)] for x, yy in cv2.approxPolyDP(p['track'][t][0].reshape(-1, 1, 2), 1.5, True).reshape(-1, 2)]} for t in sorted(p['track'])],
             'outline': {'t': p['refT'], 'frame': [width, height], 'polygon': [[round(float(x), 1), round(float(yy), 1)] for x, yy in p['refPolygon']], 'reference': slug + '-reference.jpg', 'kind': 'hand_drawn'},
         })
         print(p['parcel'], cls, confidence, 'tea share median', round(median, 3), 'spread', round(spread, 3), [fr['shares'] for fr in frames])
@@ -352,7 +357,17 @@ def main():
         'hasFlightLog': False, 'hasCameraCalibration': False, 'georeference': P['source']['georeference'],
     }
     print('capture', capture)
-    json.dump({'project': {k: P[k] for k in ('id', 'title', 'province', 'district', 'neighborhood', 'capturedAt', 'capturedAtNote', 'source', 'trainingNote')}, 'rules': RULES, 'capture': capture, 'validation': validation, 'parcels': results}, open(os.path.join(out_dir, 'analysis.json'), 'w', encoding='utf8'), ensure_ascii=False)
+    # The part of the video the parcels are on, re-encoded small for the site (H.264, no sound).
+    clip = None
+    try:
+        import imageio_ffmpeg
+        a, b = max(lo - RULES['clipMarginS'], 0), min(hi + RULES['clipMarginS'], duration)
+        subprocess.run([imageio_ffmpeg.get_ffmpeg_exe(), '-y', '-loglevel', 'error', '-ss', str(a), '-i', video, '-t', str(b - a), '-an', '-vf', 'fps=30', '-c:v', 'libx264', '-crf', '25', '-preset', 'slow', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', os.path.join(out_dir, 'clip.mp4')], check=True)
+        clip = {'file': 'clip.mp4', 'start': a, 'end': b, 'width': width, 'height': height, 'bytes': os.path.getsize(os.path.join(out_dir, 'clip.mp4'))}
+        print('clip', clip)
+    except Exception as error:  # the clip is a convenience; the analysis stands without it
+        print('clip not written:', error)
+    json.dump({'project': {k: P[k] for k in ('id', 'title', 'province', 'district', 'neighborhood', 'capturedAt', 'capturedAtNote', 'source', 'trainingNote')}, 'rules': RULES, 'capture': capture, 'clip': clip, 'validation': validation, 'parcels': results}, open(os.path.join(out_dir, 'analysis.json'), 'w', encoding='utf8'), ensure_ascii=False)
     print('written', os.path.join(out_dir, 'analysis.json'))
 
 
