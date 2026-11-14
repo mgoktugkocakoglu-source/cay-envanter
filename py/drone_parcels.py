@@ -67,13 +67,17 @@ def main():
     lo, hi = time_of(images[0]), time_of(images[-1])
 
     # ── which frames saw which ground: model points in map coordinates with the frames that observed them ──
+    shot_ids = {im.image_id for im in images}
     seen_xy, seen_by = [], []
     for p in rec.points3D.values():
         if p.track.length() < 4 or p.error > 1.5:
             continue
+        ids = {e.image_id for e in p.track.elements}
+        if not ids & shot_ids:
+            continue
         z = ctx['to_map'](p.xyz)
         seen_xy.append((z.real, z.imag))
-        seen_by.append({e.image_id for e in p.track.elements})
+        seen_by.append(ids)
     seen_xy = np.array(seen_xy, np.float32)
 
     # ── classifier: rectangles of this shot, tested frame against frame (same as drone_verify) ──
@@ -150,19 +154,21 @@ def main():
         box = (seen_xy[:, 0] >= ring_np[:, 0].min()) & (seen_xy[:, 0] <= ring_np[:, 0].max()) & (seen_xy[:, 1] >= ring_np[:, 1].min()) & (seen_xy[:, 1] <= ring_np[:, 1].max())
         idx = np.flatnonzero(box)
         idx = idx[inside_polygon(seen_xy[idx], ring_np)] if len(idx) else idx
+        seen_count = {}
+        for i in idx:
+            for image_id in seen_by[i]:
+                seen_count[image_id] = seen_count.get(image_id, 0) + 1
         track, candidates = [], []
         for im in images:
+            if seen_count.get(im.image_id, 0) < RULES['minSeenPoints']:
+                continue
             uv = project(im, ring)
             if uv is None:
                 continue
             within = (uv[:, 0] >= m) & (uv[:, 0] < W - m) & (uv[:, 1] >= m) & (uv[:, 1] < H - m)
             if within.mean() < 0.5:
                 continue
-            seen = sum(1 for i in idx if im.image_id in seen_by[i])
-            if seen < RULES['minSeenPoints']:
-                continue
-            simple = cv2.approxPolyDP(uv.reshape(-1, 1, 2), 1.0, True).reshape(-1, 2)
-            track.append({'t': time_of(im), 'polygon': [[round(float(x), 1), round(float(y), 1)] for x, y in simple]})
+            track.append((time_of(im), uv))
             if within.all() and cv2.contourArea(uv) >= RULES['minPixels']:
                 candidates.append((cv2.contourArea(uv), im, uv))
         if not track:
@@ -179,6 +185,12 @@ def main():
                 chosen.append((a, im, uv))
         chosen.sort(key=lambda c: time_of(c[1]))
         best_t = time_of(max(chosen, key=lambda c: c[0])[1])
+        # The same corners in every frame (those that describe the outline where it is largest), so a player can
+        # move the outline smoothly between two solved frames.
+        largest = max(chosen, key=lambda c: c[0])[2]
+        corners = cv2.approxPolyDP(largest.reshape(-1, 1, 2), 1.0, True).reshape(-1, 2)
+        keep = sorted({int(np.flatnonzero((largest == c).all(1))[0]) for c in corners})
+        track = [{'t': t, 'polygon': [[round(float(x), 1), round(float(y), 1)] for x, y in uv[keep]]} for t, uv in track]
         slug = key.replace('/', '-')
         frames = []
         for a, im, uv in chosen:
@@ -257,7 +269,7 @@ def main():
     clip = None
     try:
         import imageio_ffmpeg
-        subprocess.run([imageio_ffmpeg.get_ffmpeg_exe(), '-y', '-loglevel', 'error', '-ss', str(lo), '-i', video, '-t', str(hi - lo), '-an', '-vf', 'fps=30', '-c:v', 'libx264', '-crf', '26', '-preset', 'slow', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', os.path.join(out_dir, 'clip.mp4')], check=True)
+        subprocess.run([imageio_ffmpeg.get_ffmpeg_exe(), '-y', '-loglevel', 'error', '-ss', str(lo), '-i', video, '-t', str(hi - lo), '-an', '-vf', 'fps=30', '-c:v', 'libx264', '-crf', '28', '-preset', 'slow', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', os.path.join(out_dir, 'clip.mp4')], check=True)
         clip = {'file': 'clip.mp4', 'start': lo, 'end': hi, 'width': W, 'height': H, 'bytes': os.path.getsize(os.path.join(out_dir, 'clip.mp4'))}
     except Exception as error:  # the clip is a convenience; the analysis stands without it
         print('clip not written:', error)
