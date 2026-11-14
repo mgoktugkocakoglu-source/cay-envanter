@@ -162,7 +162,8 @@ def main():
     near = {k: r for k, r in rings.items() if abs(np.mean(r, axis=0)[0]) < RULES['extentM'] * 0.7 and abs(np.mean(r, axis=0)[1]) < RULES['extentM'] * 0.7}
     analysis_path = os.path.join(out_dir, 'analysis.json')
     analysis = json.load(open(analysis_path, encoding='utf8')) if os.path.exists(analysis_path) else {'parcels': []}
-    hand = {p['parcel']: np.array(p['outline']['polygon'], np.int32) for p in analysis['parcels'] if abs(p['outline']['t'] - time_of(ref)) < 0.2}
+    # Hand-marked outlines, when a project has them, are only compared with the projection; they are not needed.
+    hand = {p['parcel']: np.array(p['outline']['polygon'], np.int32) for p in analysis['parcels'] if p['outline'].get('kind') == 'hand_drawn' and abs(p['outline']['t'] - time_of(ref)) < 0.2}
     frame = cv2.imread(os.path.join(root, 'sfm', 'images', ref.name))
     in_view = []
     for k, r in near.items():
@@ -203,6 +204,7 @@ def main():
         'referenceT': time_of(ref), 'referenceImage': 'cadastre-reference.jpg', 'parcelsInView': sorted(in_view), 'parcels': result,
     }, open(os.path.join(out_dir, 'georef.json'), 'w', encoding='utf8'), ensure_ascii=False)
     print('parcels fully in view on the reference frame:', len(in_view))
+    return {'root': root, 'project': P, 'rec': rec, 'cam': cam, 'images': images, 'time_of': time_of, 'project_ring': project, 'rings': near, 'to_map': lambda xyz: s * complex(xyz @ e1, xyz @ e2) + t, 'rmsM': rms}
 
 
 def slug(text):

@@ -63,7 +63,10 @@ export interface DroneAnalysisParcel {
     teaShareMedian: number;
     teaShareSpread: number;
     otherShares: Record<string, number>;
-    match: { t: number; inliers: number; keypoints: number };
+    /** Match of a hand-marked still with the video; null when the outline is the projected cadastre. */
+    match: { t: number; inliers: number; keypoints: number } | null;
+    /** True when the parcel is small against the projection error (drone_parcels). */
+    small?: boolean;
     visible: [number, number];
     trackedFrames: number;
     frames: DroneFrame[];
@@ -172,7 +175,7 @@ export interface DroneVerificationParcel extends DroneParcelRecord {
     status: DroneStatus;
     discrepancy: string | null;
     action: string;
-    video: { visible: [number, number]; trackedFrames: number; match: { t: number; inliers: number; keypoints: number } };
+    video: { visible: [number, number]; trackedFrames: number; match: { t: number; inliers: number; keypoints: number } | null };
     outline: DroneAnalysisParcel['outline'];
     frames: DroneFrame[];
     track: DroneAnalysisParcel['track'];
@@ -205,7 +208,7 @@ const pct = (v: number) => `%${Math.round(v * 100)}`;
 
 export function suitabilityOf(c: DroneCapture, v: DroneValidation, usable: boolean, g: DroneGeoreferenceSummary | null = null): DroneVerificationFile['suitability'] {
     return [
-        { topic: 'Parselin videoda bulunması', verdict: 'ok', text: 'İşaretli görseller videodaki kareyle yüzlerce ortak noktadan eşleşiyor; parsel çekim boyunca kareden kareye izlenebiliyor.' },
+        { topic: 'Parselin videoda bulunması', verdict: 'ok', text: g ? 'Parseller elle işaretlenmeden bulunuyor: TKGM sınırları videoya bindiriliyor ve çekimin gördüğü her parsel kareden kareye izleniyor.' : 'İşaretli görseller videodaki kareyle yüzlerce ortak noktadan eşleşiyor; parsel çekim boyunca kareden kareye izlenebiliyor.' },
         { topic: 'Bitki örtüsünün gözle okunması', verdict: 'limited', text: `${c.width}×${c.height} piksel ve ${c.bitrateMbps} Mb/sn sıkıştırma ile çay sıraları ve ağaç/çalı ayrımı seçiliyor; yaprak dokusu seçilmiyor. Ağaç altındaki seyrek çay dışlanamaz.` },
         {
             topic: 'Otomatik çay sınıflandırması',
@@ -257,13 +260,17 @@ export function buildDroneVerification(input: { analysis: DroneAnalysisFile; geo
         const classSource: 'review' | 'automatic' = usable ? 'automatic' : review ? 'review' : 'automatic';
         const agree = !review || !usable || review.class === a.class;
         // A reading that nobody verified on the ground never rises above "medium"; disagreement or an unusable classifier keeps it low.
-        const confidence: DroneConfidence = review?.verified ? 'high' : usable && agree && a.confidence !== 'low' ? 'medium' : 'low';
+        // A visual reading of a parcel that is large against the projection error and clearly one thing reaches "medium".
+        const clearReading = !!review && a.outline.kind === 'cadastre' && !a.small && (review.class === 'tea_present' || review.class === 'tea_not_found');
+        const confidence: DroneConfidence = review?.verified ? 'high' : (usable && agree && a.confidence !== 'low') || clearReading ? 'medium' : 'low';
         const recordTea = record.titleTea || record.licence.licensed;
         const notes: string[] = [];
         if (!usable) notes.push(`Otomatik sınıflandırma deneysel: bu parselde “${CLASS_LABEL[a.class]}” diyor (çay payı ortanca ${pct(a.teaShareMedian)}, kareler arası fark ${pct(a.teaShareSpread)}).`);
         if (review && !review.verified) notes.push('Görsel inceleme saha ya da eksper tarafından doğrulanmadı.');
         if (usable && review && !agree) notes.push(`Otomatik sınıflandırma (“${CLASS_LABEL[a.class]}”) ile görsel inceleme (“${CLASS_LABEL[review.class]}”) ayrışıyor.`);
         if (a.outline.kind === 'hand_drawn') notes.push('Karedeki düz çizgi elle çizilmiş yaklaşık eşleştirmedir; kadastro sınırı değildir.');
+        if (a.outline.kind === 'cadastre' && georef) notes.push(`Karedeki çizgi, videoya yaklaşık olarak bindirilen TKGM sınırıdır (kontrol binalarında ortalama hata ${georef.rmsM} m, en büyük ${georef.maxResidualM} m); sınır tespiti ve alan ölçümü için kullanılmaz.`);
+        if (a.small) notes.push('Parsel bindirme hatasına göre küçük: çizimin içine komşu parselden pay girmiş olabilir.');
         const cadastre = georef?.parcels[a.parcel] ?? null;
         if (cadastre && georef) notes.push(`Kesikli çizgi, videoya yaklaşık olarak bindirilen TKGM sınırıdır (kontrol binalarında ortalama hata ${georef.rmsM} m). Elle çizimin ${pct(cadastre.handOverlap.handInsideCadastre)} kadarı bu sınırın içinde kalıyor.`);
         if (record.satellite && record.satellite.fullPixels < 6) notes.push(`Uydu için parsel küçük (${record.satellite.fullPixels} tam piksel): uydu okuması komşu bahçelerden etkilenir.`);
