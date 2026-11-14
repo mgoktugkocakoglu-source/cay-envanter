@@ -18,6 +18,7 @@ import { loadFieldTestsForBundle } from '../pruning/field-tests-bundle.ts';
 import { loadPixelScanForBundle } from '../pruning/pixel-scan-bundle.ts';
 import { loadCombinedForBundle } from '../pruning/combined-bundle.ts';
 import { loadLicenceAuditForBundle } from '../audit/bundle.ts';
+import { loadDroneForBundle } from '../drone/bundle.ts';
 
 /**
  * Packs one neighborhood's inventory into a single JSON bundle for the cayhesabim site
@@ -91,6 +92,7 @@ function main(): void {
     const code = [meta.province, meta.district, meta.neighborhood].map(slugify).join('-');
     // The site serves season imagery as static files (apps/web/public/inventory-imagery/<code>/).
     const imageryBaseUrl = `/inventory-imagery/${code}/`;
+    const drone = loadDroneForBundle(store.dir);
     const pruning = loadPruningForBundle(store.dir, roundCoords, imageryBaseUrl);
     const producerName = new Map<string, string>();
     for (const p of loadProducersForBundle(store.dir, parcels.map((f) => ({ ...f.properties, geometry: f.geometry })), roundCoords, imageryBaseUrl, null)?.producers ?? []) {
@@ -201,6 +203,8 @@ function main(): void {
         pruningCombined: loadCombinedForBundle(store.dir),
         // Optional: licence audit (deed title × licence register × title-independent detection; separate module under licensing).
         licenceAudit: loadLicenceAuditForBundle(store.dir),
+        // Optional: drone-supported land verification (record × drone imagery; separate module under licensing).
+        droneVerification: drone?.block ?? null,
         licensing: {
             demo: true,
             generatedAt: registry.generatedAt,
@@ -229,6 +233,12 @@ function main(): void {
     console.log(`Arazi değerlendirme: ${bundle.land ? `${bundle.land.parcels.length} parsel` : 'yok'} · bahçe yaşı: ${bundle.age ? `${bundle.age.parcels.length} parsel` : 'yok'}`);
     console.log(`Paket: ${outPath}`);
 
+    for (const e of drone?.evidence ?? []) {
+        const droneOut = join(values.out, 'imagery', code, 'drone', e.project);
+        mkdirSync(droneOut, { recursive: true });
+        for (const f of e.files) copyFileSync(join(e.dir, f), join(droneOut, f));
+        console.log(`Drone kanıt kareleri (${e.files.length}): ${droneOut}`);
+    }
     const imagery = loadSeasonImagery(store.dir);
     if (imagery) {
         const imageryOut = join(values.out, 'imagery', code);
