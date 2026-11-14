@@ -112,6 +112,28 @@ export interface DroneAnalysisFile {
     validation: DroneValidation;
     parcels: DroneAnalysisParcel[];
 }
+/**
+ * Approximate tie of a video to the map: camera poses solved from the video itself (structure from motion), the model
+ * placed on the map by matching marked buildings to mapped footprints. Metres, not centimetres; no areas.
+ */
+export interface DroneGeoreferenceSummary {
+    method: string;
+    model: { frames: number; points: number; reprojectionErrorPx: number; shot: [number, number]; meanRollDeg: number };
+    controls: Array<{ building: string; target: string; residualM: number }>;
+    markedBuildings: number;
+    rmsM: number;
+    maxResidualM: number;
+    scaleMPerUnit: number;
+    referenceT: number;
+    referenceImage: string;
+    /** Parcels whose projected outline lies fully inside the reference frame. */
+    parcelsInView: string[];
+}
+/** Output of py/drone_georef.py. */
+export interface DroneGeorefFile extends DroneGeoreferenceSummary {
+    parcels: Record<string, { handOverlap: { iou: number; handInsideCadastre: number; cadastreInsideHand: number }; track: Array<{ t: number; polygon: Array<[number, number]> }> }>;
+}
+
 /** A person's (or an assistant's) reading of the frames. `verified` is true only after an expert or a field visit. */
 export interface DroneReview {
     parcel: string;
@@ -154,6 +176,10 @@ export interface DroneVerificationParcel extends DroneParcelRecord {
     outline: DroneAnalysisParcel['outline'];
     frames: DroneFrame[];
     track: DroneAnalysisParcel['track'];
+    /** TKGM outline projected into the video through the approximate georeference; empty without one. */
+    cadastreTrack: Array<{ t: number; polygon: Array<[number, number]> }>;
+    /** Overlap of the hand-drawn outline with the projected cadastre on the reference frame (shares of pixel area). */
+    handOverlap: { iou: number; handInsideCadastre: number; cadastreInsideHand: number } | null;
     notes: string[];
 }
 
@@ -164,6 +190,7 @@ export interface DroneVerificationFile {
     sources: DroneSource[];
     capture: DroneCapture;
     clip: DroneClip | null;
+    georeference: DroneGeoreferenceSummary | null;
     /** What this source can and cannot support, in plain statements. */
     suitability: Array<{ topic: string; verdict: 'ok' | 'limited' | 'no'; text: string }>;
     validation: DroneValidation & { usable: boolean };
@@ -176,7 +203,7 @@ export interface DroneVerificationFile {
 const CLASS_LABEL: Record<DroneClass, string> = { tea_present: 'çay mevcut', tea_not_found: 'çay bulunamadı', partial: 'kısmen çay mevcut', uncertain: 'belirsiz' };
 const pct = (v: number) => `%${Math.round(v * 100)}`;
 
-export function suitabilityOf(c: DroneCapture, v: DroneValidation, usable: boolean): DroneVerificationFile['suitability'] {
+export function suitabilityOf(c: DroneCapture, v: DroneValidation, usable: boolean, g: DroneGeoreferenceSummary | null = null): DroneVerificationFile['suitability'] {
     return [
         { topic: 'Parselin videoda bulunması', verdict: 'ok', text: 'İşaretli görseller videodaki kareyle yüzlerce ortak noktadan eşleşiyor; parsel çekim boyunca kareden kareye izlenebiliyor.' },
         { topic: 'Bitki örtüsünün gözle okunması', verdict: 'limited', text: `${c.width}×${c.height} piksel ve ${c.bitrateMbps} Mb/sn sıkıştırma ile çay sıraları ve ağaç/çalı ayrımı seçiliyor; yaprak dokusu seçilmiyor. Ağaç altındaki seyrek çay dışlanamaz.` },
@@ -185,7 +212,13 @@ export function suitabilityOf(c: DroneCapture, v: DroneValidation, usable: boole
             verdict: usable ? 'ok' : 'limited',
             text: `Aynı çekimin kareleri arasında sınamada doğruluk ${pct(v.accuracy)}, çay yakalama ${pct(v.teaRecall)}, çay kesinliği ${pct(v.teaPrecision)}${v.transfer ? `; başka çekimlere aktarımda doğruluk ${pct(v.transfer.accuracy)}, çay yakalama ${pct(v.transfer.teaRecall)}` : ''}. ${usable ? 'Eşik karşılanıyor.' : `Eşik (${pct(DRONE_RULES.usableTeaRecall)} / ${pct(DRONE_RULES.usableTeaPrecision)}) karşılanmıyor: otomatik sonuç deneysel gösterilir, haritayı renklendirmez.`} Etiketler gözle konuldu; saha doğrulaması yok.`,
         },
-        { topic: 'Koordinat ve kadastro sınırı', verdict: 'no', text: 'Uçuş kaydı, kamera konumu ve kalibrasyon yok: kareye koordinat verilemez, kadastro sınırı kareye oturtulamaz. Karedeki çizgi işaretleyenin çizimidir, parsel sınırı değildir.' },
+        g
+            ? {
+                  topic: 'Koordinat ve kadastro sınırı',
+                  verdict: 'limited' as const,
+                  text: `Uçuş kaydı yok; kamera konumları videonun kendisinden çözüldü (${g.model.frames} kare, ${g.model.points.toLocaleString('tr-TR')} 3B nokta, ${g.model.reprojectionErrorPx} piksel hata) ve model ${g.controls.length} binanın harita üzerindeki iziyle haritaya bağlandı. Kontrol binalarında ortalama hata ${g.rmsM} m, en büyük ${g.maxResidualM} m. TKGM sınırı bu doğrulukla videoya bindirilir: hangi parselin nerede göründüğünü gösterir, sınır tespiti ya da ölçüm için yeterli değildir.`,
+              }
+            : { topic: 'Koordinat ve kadastro sınırı', verdict: 'no' as const, text: 'Uçuş kaydı, kamera konumu ve kalibrasyon yok: kareye koordinat verilemez, kadastro sınırı kareye oturtulamaz. Karedeki çizgi işaretleyenin çizimidir, parsel sınırı değildir.' },
         { topic: 'Alan ölçümü', verdict: 'no', text: 'Eğik bakışlı, ölçeksiz kareden m² üretilemez. Alan için tapu alanı ve TKGM geometrisi geçerlidir.' },
         {
             topic: 'Fotogrametri (ortofoto / 3B model)',
@@ -196,8 +229,9 @@ export function suitabilityOf(c: DroneCapture, v: DroneValidation, usable: boole
 }
 
 /** Binds the analysis, the reviews and the parcel records into the verification file. */
-export function buildDroneVerification(input: { analysis: DroneAnalysisFile; reviews: DroneReview[]; records: DroneParcelRecord[]; licenceSource: 'demo' | 'caykur'; imageryBaseUrl: string; analysedAt: string }): DroneVerificationFile {
-    const { analysis, reviews, records } = input;
+export function buildDroneVerification(input: { analysis: DroneAnalysisFile; georef: DroneGeorefFile | null; reviews: DroneReview[]; records: DroneParcelRecord[]; licenceSource: 'demo' | 'caykur'; imageryBaseUrl: string; analysedAt: string }): DroneVerificationFile {
+    const { analysis, reviews, records, georef } = input;
+    const georeference: DroneGeoreferenceSummary | null = georef ? (({ parcels: _parcels, ...rest }) => rest)(georef) : null;
     const v = analysis.validation;
     const usable = v.teaRecall >= DRONE_RULES.usableTeaRecall && v.teaPrecision >= DRONE_RULES.usableTeaPrecision;
     const source: DroneSource = {
@@ -229,7 +263,9 @@ export function buildDroneVerification(input: { analysis: DroneAnalysisFile; rev
         if (!usable) notes.push(`Otomatik sınıflandırma deneysel: bu parselde “${CLASS_LABEL[a.class]}” diyor (çay payı ortanca ${pct(a.teaShareMedian)}, kareler arası fark ${pct(a.teaShareSpread)}).`);
         if (review && !review.verified) notes.push('Görsel inceleme saha ya da eksper tarafından doğrulanmadı.');
         if (usable && review && !agree) notes.push(`Otomatik sınıflandırma (“${CLASS_LABEL[a.class]}”) ile görsel inceleme (“${CLASS_LABEL[review.class]}”) ayrışıyor.`);
-        if (a.outline.kind === 'hand_drawn') notes.push('Karedeki sınır elle çizilmiş yaklaşık eşleştirmedir; kadastro sınırı değildir.');
+        if (a.outline.kind === 'hand_drawn') notes.push('Karedeki düz çizgi elle çizilmiş yaklaşık eşleştirmedir; kadastro sınırı değildir.');
+        const cadastre = georef?.parcels[a.parcel] ?? null;
+        if (cadastre && georef) notes.push(`Kesikli çizgi, videoya yaklaşık olarak bindirilen TKGM sınırıdır (kontrol binalarında ortalama hata ${georef.rmsM} m). Elle çizimin ${pct(cadastre.handOverlap.handInsideCadastre)} kadarı bu sınırın içinde kalıyor.`);
         if (record.satellite && record.satellite.fullPixels < 6) notes.push(`Uydu için parsel küçük (${record.satellite.fullPixels} tam piksel): uydu okuması komşu bahçelerden etkilenir.`);
         let status: DroneStatus = 'consistent';
         let discrepancy: string | null = null;
@@ -268,6 +304,8 @@ export function buildDroneVerification(input: { analysis: DroneAnalysisFile; rev
             outline: a.outline,
             frames: a.frames,
             track: a.track ?? [],
+            cadastreTrack: cadastre?.track ?? [],
+            handOverlap: cadastre?.handOverlap ?? null,
             notes,
         });
     }
@@ -278,7 +316,8 @@ export function buildDroneVerification(input: { analysis: DroneAnalysisFile; rev
         sources: [source],
         capture: analysis.capture,
         clip: analysis.clip ?? null,
-        suitability: suitabilityOf(analysis.capture, v, usable),
+        georeference,
+        suitability: suitabilityOf(analysis.capture, v, usable, georeference),
         validation: { ...v, usable },
         licenceSource: input.licenceSource,
         imageryBaseUrl: input.imageryBaseUrl,

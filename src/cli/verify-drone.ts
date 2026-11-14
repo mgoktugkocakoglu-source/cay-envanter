@@ -2,7 +2,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSyn
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import type { AuditFile } from './audit-licensing.ts';
-import { buildDroneVerification, type DroneAnalysisFile, type DroneParcelRecord, type DroneReview } from '../drone/model.ts';
+import { buildDroneVerification, type DroneAnalysisFile, type DroneGeorefFile, type DroneParcelRecord, type DroneReview } from '../drone/model.ts';
 import { NeighborhoodStore, slugify } from '../library/store.ts';
 
 const USAGE = `
@@ -11,6 +11,7 @@ Kullanım:
 
 Drone destekli arazi doğrulama (ruhsatlandırma altında ayrı modül; diğer modüllerin çıktısına dokunmaz):
   1. Görüntü analizi :  .venv/Scripts/python.exe py/drone_verify.py <proje>   → <proje>/out/analysis.json + kanıt kareleri
+  1b. (isteğe bağlı) :  py/drone_sfm.py + py/drone_georef.py → <proje>/out/georef.json (TKGM sınırının videoya yaklaşık bindirilmesi)
   2. Görsel inceleme :  <proje>/review.json  [{ "parcel": "106/23", "class": "tea_not_found", "observer": "...", "verified": false, "date": "...", "frames": [...], "note": "..." }]
   3. Bu komut        :  analiz + inceleme + kayıt (tapu niteliği, ruhsat, uydu tespiti: licence-audit/audit.json) → drone/verification.json
 Sınıflar: çay mevcut · çay bulunamadı · kısmen çay mevcut · belirsiz. Uyuşmazlık yalnız yerinde kontrol önerir; idari karar üretmez.
@@ -25,6 +26,9 @@ function main(): void {
     const analysisPath = join(values.project, 'out', 'analysis.json');
     if (!existsSync(analysisPath)) throw new Error(`${analysisPath} yok; önce py/drone_verify.py çalıştırın.`);
     const analysis = JSON.parse(readFileSync(analysisPath, 'utf8')) as DroneAnalysisFile;
+    // Optional: approximate cadastre overlay (py/drone_sfm.py + py/drone_georef.py).
+    const georefPath = join(values.project, 'out', 'georef.json');
+    const georef = existsSync(georefPath) ? (JSON.parse(readFileSync(georefPath, 'utf8')) as DroneGeorefFile) : null;
     const reviewPath = join(values.project, 'review.json');
     const reviews = existsSync(reviewPath) ? (JSON.parse(readFileSync(reviewPath, 'utf8')) as DroneReview[]) : [];
     const { province, district, neighborhood, id } = analysis.project;
@@ -48,7 +52,7 @@ function main(): void {
     if (missing.length) console.log(`Kayıtta bulunamayan parseller atlandı: ${missing.join(', ')} (audit-licensing --parcels ile eklenebilir)`);
 
     const code = [province, district, neighborhood].map(slugify).join('-');
-    const file = buildDroneVerification({ analysis, reviews, records, licenceSource: audit.licenceSource, imageryBaseUrl: `/inventory-imagery/${code}/drone/${id}/`, analysedAt: statSync(analysisPath).mtime.toISOString().slice(0, 10) });
+    const file = buildDroneVerification({ analysis, georef, reviews, records, licenceSource: audit.licenceSource, imageryBaseUrl: `/inventory-imagery/${code}/drone/${id}/`, analysedAt: statSync(analysisPath).mtime.toISOString().slice(0, 10) });
     const outDir = join(store.dir, 'drone');
     const evidenceDir = join(outDir, 'evidence', id);
     mkdirSync(evidenceDir, { recursive: true });
@@ -59,6 +63,7 @@ function main(): void {
     const v = file.validation;
     console.log(`Kaynak: ${file.sources[0]?.title} · ${file.capture.width}×${file.capture.height}, ${file.capture.bitrateMbps} Mb/sn · konum verisi: yok`);
     console.log(`Otomatik sınıflandırıcı (çekim içi çapraz sınama): doğruluk %${Math.round(v.accuracy * 100)} · çay yakalama %${Math.round(v.teaRecall * 100)} · çay kesinliği %${Math.round(v.teaPrecision * 100)} → ${v.usable ? 'kullanılabilir' : 'DENEYSEL (haritayı renklendirmez)'}`);
+    if (file.georeference) console.log(`Yaklaşık kadastro bindirmesi: ${file.georeference.model.frames} kare çözüldü · ${file.georeference.controls.length} kontrol binası · ortalama hata ${file.georeference.rmsM} m · karede tam görünen ${file.georeference.parcelsInView.length} parsel`);
     for (const p of file.parcels) {
         console.log(`${p.block}/${p.parcel} · kayıt: ${p.nature}, ${p.licence.licensed ? 'ruhsatlı' : 'ruhsatsız'} · video ${p.video.visible[0]}–${p.video.visible[1]} sn · sınıf: ${p.class} (${p.classSource}, güven ${p.confidence}) · otomatik: ${p.automatic.class} (çay payı %${Math.round(p.automatic.teaShareMedian * 100)}) · durum: ${p.status}`);
         if (p.discrepancy) console.log(`  Uyuşmazlık: ${p.discrepancy}`);
