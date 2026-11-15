@@ -81,7 +81,7 @@ Neither sees the other's conversation; the repositories are the only shared stat
 
 `../cayhesabim/CLAUDE.md` holds that repository's rules (English-only code, `@/` alias, thin controllers, DTOs,
 `{ data, meta }` pagination, shadcn-vue kit, ≥ 44 px touch targets, no test runner, TypeORM `synchronize: true`).
-The `AGENTS.md` in its root is an unrelated n8n prompt; ignore it. Use `corepack pnpm@8.15.0 --filter <pkg> …` there,
+Use `corepack pnpm@8.15.0 --filter <pkg> …` there,
 `npx vue-tsc --noEmit` in `apps/web` for the web type-check. Local database: `node start-db.mjs` in `../lokal`.
 The API reads test credentials from `apps/api/.env`; never echo them.
 
