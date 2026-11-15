@@ -85,6 +85,21 @@ Use `corepack pnpm@8.15.0 --filter <pkg> …` there,
 `npx vue-tsc --noEmit` in `apps/web` for the web type-check. Local database: `node start-db.mjs` in `../lokal`.
 The API reads test credentials from `apps/api/.env`; never echo them.
 
+## Compliance certainty (offline)
+
+`check-compliance` reads only existing audit/drone JSON. Its additive `certainty` and `certaintyReason` fields do
+not change `overall` or `checks`. `CERTAINTY_RULES` defines conservative satellite thresholds: >= 6 whole pixels,
+no extrapolation beyond training, presence share/probability >= 0.6, or absence share < 0.05. Audit confidence is
+not reused because field confirmation can raise it. Partial, uncertain, low-confidence and unusable automatic
+drone readings are not clear imagery sources.
+
+Conflicting records, clear imagery or field observations take precedence (`conflict`); incompatible open area,
+public-use and building rules also prevent agreement. One clear image source without contradiction is
+`single_source`; no clear reading or unresolved rules is `undecidable`. Only two agreeing image modalities with
+consistent records and no failed/review rule qualify as `agreed` ("Kaynaklar uyumlu", never verified truth).
+`summary.byCertainty` contains parcel counts and cadastral area sums. All but `agreed` remain undecided. DEMO
+register status and unverified drone reviews remain unchanged. Rerun `check-compliance` before export/sync.
+
 ## Open items
 
 - Real ÇAYKUR licence and producer lists (everything licence-based is DEMO).

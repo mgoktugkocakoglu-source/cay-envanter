@@ -34,6 +34,9 @@ function main(): void {
     writeFileSync(join(outDir, 'report.json'), JSON.stringify(file));
 
     const o = file.summary.byOverall;
+    for (const [certainty, stats] of Object.entries(file.summary.byCertainty)) {
+        console.log(`Kesinlik ${certainty}: ${stats.parcels} parsel, ${stats.areaM2.toFixed(2)} m2 (ön değerlendirme; ruhsat: ${file.licenceSource})`);
+    }
     console.log(`Parsel: ${file.summary.parcels} · ruhsat kaydı: ${file.licenceSource === 'demo' ? 'DEMO' : 'ÇAYKUR'} · drone okuması olan: ${file.sources.droneParcels}`);
     console.log(`Uygun ${o.conforming} · aykırılık bulgusu ${o.finding} · inceleme ${o.review} · kanıt yok ${o.no_evidence} · kapsam dışı ${o.out_of_scope}`);
     for (const r of COMPLIANCE_RULES) {

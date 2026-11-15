@@ -26,6 +26,20 @@ export const COMPLIANCE_RULES_CONFIG = {
 
 export type CheckStatus = 'pass' | 'fail' | 'review' | 'unknown' | 'na';
 export type ComplianceOverall = 'conforming' | 'finding' | 'review' | 'no_evidence' | 'out_of_scope';
+export type ComplianceCertainty = 'agreed' | 'single_source' | 'conflict' | 'undecidable';
+
+/** Conservative evidence thresholds, not accuracy estimates or administrative decision criteria. */
+export const CERTAINTY_RULES = {
+    /** Six whole 10 m pixels: below this, parcel edges dominate the reading (audit's fewPixels threshold). */
+    satelliteMinPixels: 6,
+    /** A majority tea cover and a clear model probability are both needed, as in the audit's strong reading. */
+    satellitePresentShare: 0.6,
+    satelliteMinProbability: 0.6,
+    /** Absence needs almost no detected tea; intermediate readings cannot exclude sparse tea. */
+    satelliteAbsentShare: 0.05,
+    /** Satellite and drone are two modalities; extra frames, detectors and field notes are not extra imagery sources. */
+    independentSourcesForAgreement: 2,
+};
 export type RuleSource = 'record' | 'satellite' | 'drone' | 'field' | 'buildings';
 
 export interface ComplianceRule {
@@ -68,6 +82,8 @@ export interface ComplianceParcel {
     areaM2: number;
     licensed: boolean;
     overall: ComplianceOverall;
+    certainty: ComplianceCertainty;
+    certaintyReason: string;
     /** Rules that failed or went to review, worst first. */
     open: string[];
     checks: ComplianceCheck[];
@@ -78,8 +94,9 @@ export interface ComplianceFile {
     method: string;
     ruleset: { id: string; version: string; status: 'draft'; note: string; config: typeof COMPLIANCE_RULES_CONFIG; rules: ComplianceRule[] };
     licenceSource: 'demo' | 'caykur';
+    certaintyConfig: typeof CERTAINTY_RULES;
     sources: { auditGeneratedAt: string; droneGeneratedAt: string | null; droneParcels: number };
-    summary: { parcels: number; byOverall: Record<ComplianceOverall, number>; byRule: Record<string, Record<CheckStatus, number>> };
+    summary: { parcels: number; byOverall: Record<ComplianceOverall, number>; byCertainty: Record<ComplianceCertainty, { parcels: number; areaM2: number }>; byRule: Record<string, Record<CheckStatus, number>> };
     parcels: ComplianceParcel[];
 }
 
@@ -185,6 +202,44 @@ const ACTIONS: Record<string, string> = {
     K10: 'Saha gözlemi kayıtla uyuşmuyor: kayıt güncellenmeli.',
 };
 
+/** Read raw imagery only: audit confidence may have been raised by a field observation. */
+function clearSatellite(p: AuditParcel): boolean | null {
+    const d = p.detection;
+    const r = CERTAINTY_RULES;
+    if (d.fullPixels < r.satelliteMinPixels || d.beyondTraining || d.teaShare === null) return null;
+    if (d.tea === 'present' && d.teaShare >= r.satellitePresentShare && (d.teaProbability ?? 0) >= r.satelliteMinProbability) return true;
+    if (d.tea === 'absent' && d.teaShare < r.satelliteAbsentShare) return false;
+    return null;
+}
+
+/** A partial/uncertain or unusable automatic reading does not describe the whole parcel clearly. */
+function clearDrone(d: DroneVerificationParcel | null): boolean | null {
+    if (!d || d.confidence === 'low' || (d.classSource === 'automatic' && !d.automatic.usable)) return null;
+    return d.class === 'tea_present' ? true : d.class === 'tea_not_found' ? false : null;
+}
+
+export function classifyCertainty(p: AuditParcel, d: DroneVerificationParcel | null, checks: ComplianceCheck[]): Pick<ComplianceParcel, 'certainty' | 'certaintyReason'> {
+    const satellite = clearSatellite(p);
+    const drone = clearDrone(d);
+    const readings = [satellite, drone].filter((value): value is boolean => value !== null);
+    const field = p.confirmation?.tea;
+    // A missing register entry is compared as recorded, never as proof of an offence (especially for DEMO).
+    const recordConflict = p.title.tea !== p.licence.licensed;
+    const imageryConflict = readings.some((value) => value !== p.title.tea || value !== p.licence.licensed);
+    const fieldConflict = field != null && (field !== p.title.tea || field !== p.licence.licensed || readings.some((value) => value !== field));
+    // These open rules explicitly describe incompatible areas, public use or building records.
+    const recordRules = checks.filter((c) => ['K5', 'K6', 'K7', 'K9'].includes(c.rule) && (c.status === 'fail' || c.status === 'review'));
+    if (recordConflict || imageryConflict || fieldConflict || recordRules.length) {
+        return { certainty: 'conflict', certaintyReason: `Kaynaklar veya kayıtlar çelişiyor${recordRules.length ? ` (${recordRules.map((c) => c.rule).join(', ')})` : ''}; karar verilemedi, saha/kayıt kontrolü gerekli.` };
+    }
+    if (readings.length === 0) return { certainty: 'undecidable', certaintyReason: 'Net ve bağımsız görüntü okuması yok; küçük parsel, yetersiz uydu veya eksik/belirsiz drone nedeniyle karar verilemedi.' };
+    if (readings.length === 1) return { certainty: 'single_source', certaintyReason: `Yalnız ${satellite !== null ? 'uydu' : 'drone'} net okunuyor; kayıtlarla çelişki yok ancak ikinci bağımsız görüntü kaynağı olmadan karar verilemedi.` };
+    if (readings.length >= CERTAINTY_RULES.independentSourcesForAgreement && !checks.some((c) => c.status === 'fail' || c.status === 'review')) {
+        return { certainty: 'agreed', certaintyReason: 'Uydu ve drone aynı yönde; tapu niteliği ve ruhsat kaydı tutarlı, açık kural yok. Kaynaklar uyumlu; ön değerlendirmedir, idari karar değildir.' };
+    }
+    return { certainty: 'undecidable', certaintyReason: 'Görüntü okumaları aynı yönde olsa da açık kurallar kapanmadı; karar verilemedi.' };
+}
+
 export function buildCompliance(audit: AuditFile, drone: DroneVerificationFile | null): ComplianceFile {
     const byKey = new Map((drone?.parcels ?? []).map((d) => [d.key, d]));
     const licenceVerified = audit.licenceSource === 'caykur';
@@ -197,12 +252,15 @@ export function buildCompliance(audit: AuditFile, drone: DroneVerificationFile |
         const overall: ComplianceOverall = has('fail') ? 'finding' : !teaRelated && !has('review') ? 'out_of_scope' : has('review') ? 'review' : ['K2', 'K3', 'K4', 'K10'].some((r) => checks.find((c) => c.rule === r)?.status === 'pass') ? 'conforming' : 'no_evidence';
         const open = checks.filter((c) => order.includes(c.status)).sort((a, b) => order.indexOf(a.status) - order.indexOf(b.status)).map((c) => c.rule);
         const action = open.length ? ACTIONS[open[0] as string] ?? '' : overall === 'no_evidence' ? 'Çay varlığı için yeterli kanıt yok: drone görüntüsü ya da yerinde kontrol ile tamamlanmalı.' : 'İşlem gerekmiyor.';
-        return { key: p.key, block: p.block, parcel: p.parcel, nature: p.nature, locality: p.locality, areaM2: p.areaM2, licensed: p.licence.licensed, overall, open, checks, action };
+        return { key: p.key, block: p.block, parcel: p.parcel, nature: p.nature, locality: p.locality, areaM2: p.areaM2, licensed: p.licence.licensed, overall, ...classifyCertainty(p, byKey.get(p.key) ?? null, checks), open, checks, action };
     });
     const byOverall: Record<ComplianceOverall, number> = { conforming: 0, finding: 0, review: 0, no_evidence: 0, out_of_scope: 0 };
+    const byCertainty: ComplianceFile['summary']['byCertainty'] = { agreed: { parcels: 0, areaM2: 0 }, single_source: { parcels: 0, areaM2: 0 }, conflict: { parcels: 0, areaM2: 0 }, undecidable: { parcels: 0, areaM2: 0 } };
     const byRule: Record<string, Record<CheckStatus, number>> = Object.fromEntries(COMPLIANCE_RULES.map((r) => [r.id, { pass: 0, fail: 0, review: 0, unknown: 0, na: 0 }]));
     for (const p of parcels) {
         byOverall[p.overall]++;
+        byCertainty[p.certainty].parcels++;
+        byCertainty[p.certainty].areaM2 += p.areaM2;
         for (const c of p.checks) (byRule[c.rule] as Record<CheckStatus, number>)[c.status]++;
     }
     return {
@@ -210,8 +268,9 @@ export function buildCompliance(audit: AuditFile, drone: DroneVerificationFile |
         method: 'Her parsel, yazılı kurallara karşı tek tek sınanır; her kuralın sonucu dayandığı kanıtla birlikte verilir. Kural yalnız bulgu taşıyabilecek kanıtla “aykırı” olur (çelişen iki kayıt, net uydu okuması, doğrulanmış gözlem); daha zayıf kanıt incelemeye gider. Sonuç ön değerlendirmedir, idari karar üretmez.',
         ruleset: { id: 'cay-ruhsat-uygunluk', version: '0.1', status: 'draft', note: 'Taslak kural seti: kural metinleri denetim mantığını yazar; dayandıkları mevzuat maddeleri ÇAYKUR ile eşleştirilmelidir.', config: COMPLIANCE_RULES_CONFIG, rules: COMPLIANCE_RULES },
         licenceSource: audit.licenceSource,
+        certaintyConfig: CERTAINTY_RULES,
         sources: { auditGeneratedAt: audit.generatedAt, droneGeneratedAt: drone?.generatedAt ?? null, droneParcels: drone?.parcels.length ?? 0 },
-        summary: { parcels: parcels.length, byOverall, byRule },
+        summary: { parcels: parcels.length, byOverall, byCertainty, byRule },
         parcels,
     };
 }
