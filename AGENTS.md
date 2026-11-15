@@ -111,3 +111,7 @@ register status and unverified drone reviews remain unchanged. Rerun `check-comp
 ## Remote-only licensing workflow
 
 No new field-verification workflow is planned. Use existing satellite observations and drone imagery; planned mapping flights may supply better evidence later. Historical field notes remain source records, not a required workflow. `npm run remote-evidence-coverage -- --province Trabzon --district Of --neighborhood Çataldere` inventories only local imagery and monthly series into `remote-evidence/coverage.json`; it does not change classifications or any site bundle.
+
+## Existing relative terrain export
+
+export-site adds remoteTerrain from existing drone project out/ortho.json and its published height PNG. It does not run reconstruction or enable the oblique-video orthophoto. Missing local height data yields null. Heights remain relative and georeferencing residuals are not independent accuracy. Follow the usual export, sync, build and restart flow.

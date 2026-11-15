@@ -20,6 +20,7 @@ import { loadCombinedForBundle } from '../pruning/combined-bundle.ts';
 import { loadLicenceAuditForBundle } from '../audit/bundle.ts';
 import { loadDroneForBundle } from '../drone/bundle.ts';
 import { loadComplianceForBundle } from '../compliance/bundle.ts';
+import { loadRemoteTerrain } from '../remote-evidence/terrain.ts';
 
 /**
  * Packs one neighborhood's inventory into a single JSON bundle for the cayhesabim site
@@ -208,6 +209,7 @@ function main(): void {
         droneVerification: drone?.block ?? null,
         // Optional: rule-based licence compliance report (audit + drone read rule by rule; separate module under licensing).
         compliance: loadComplianceForBundle(store.dir),
+        remoteTerrain: loadRemoteTerrain(store.dir),
         licensing: {
             demo: true,
             generatedAt: registry.generatedAt,
