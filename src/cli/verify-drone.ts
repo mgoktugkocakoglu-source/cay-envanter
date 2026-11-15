@@ -59,7 +59,7 @@ function main(): void {
     const outDir = join(store.dir, 'drone');
     const evidenceDir = join(outDir, 'evidence', id);
     mkdirSync(evidenceDir, { recursive: true });
-    const images = readdirSync(join(values.project, 'out')).filter((f) => /\.(jpe?g|mp4|webp)$/i.test(f));
+    const images = readdirSync(join(values.project, 'out')).filter((f) => /\.(jpe?g|mp4|webp|png)$/i.test(f));
     for (const f of images) copyFileSync(join(values.project, 'out', f), join(evidenceDir, f));
     writeFileSync(join(outDir, 'verification.json'), JSON.stringify(file));
 

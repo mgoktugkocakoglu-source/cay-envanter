@@ -34,6 +34,7 @@ RULES = {
     'occlusionSamples': 24,
     'minPatchCells': 6,
     'fillHoleCells': 40,
+    'terrainCellM': 2.0,
 }
 
 
@@ -153,12 +154,25 @@ def main():
         times[choice == index] = int(round(time_of(images[index]) * 10))
     cr0, cr1, cc0, cc1 = r0 // k, -(-r1 // k), c0 // k, -(-c1 // k)
     cv2.imwrite(os.path.join(out_dir, 'ortho-times.png'), times[cr0:cr1, cc0:cc1])
+    # The ground surface under the orthophoto, for a 3D view: heights relative to the lowest cell, 16 bit split over
+    # two 8 bit channels (red = high byte, green = low byte) so a browser canvas can read it back.
+    tstep = RULES['terrainCellM']
+    tw, th = int((east - west) / tstep), int((north - south) / tstep)
+    te = west + (np.arange(tw) + 0.5) * (east - west) / tw
+    tn = north - (np.arange(th) + 0.5) * (north - south) / th
+    TE, TN = np.meshgrid(te.astype(np.float32), tn.astype(np.float32))
+    TZ = ground(TE, TN)
+    zmin, zmax = float(TZ.min()), float(TZ.max())
+    q16 = np.round((TZ - zmin) / max(zmax - zmin, 1e-6) * 65535).astype(np.uint16)
+    cv2.imwrite(os.path.join(out_dir, 'ortho-height.png'), np.dstack([np.zeros_like(q16), q16 & 255, q16 >> 8]).astype(np.uint8))
     georef = json.load(open(os.path.join(out_dir, 'georef.json'), encoding='utf8'))
     meta = {
         'image': 'ortho.webp', 'width': int(c1 - c0), 'height': int(r1 - r0), 'resolutionM': res,
         'bounds': {'southWest': lonlat(west, south), 'northEast': lonlat(east, north)},
         'times': {'image': 'ortho-times.png', 'cellM': step, 'unit': 'ds',
                   'bounds': {'southWest': lonlat(cc0 * step - half, half - cr1 * step), 'northEast': lonlat(cc1 * step - half, half - cr0 * step)}},
+        'terrain': {'image': 'ortho-height.png', 'width': tw, 'height': th, 'cellM': tstep, 'reliefM': round(zmax - zmin, 1),
+                    'note': 'Zemin modeli videodan çözülen seyrek noktalardan çıkarıldı; yükseklikler görelidir (deniz seviyesine bağlı değil), yapı ve ağaç yüksekliği içermez.'},
         'coveredHa': round(float((alpha > 0).sum()) * res * res / 10000, 1),
         'framesUsed': len(used), 'shot': [time_of(images[0]), time_of(images[-1])],
         'georefRmsM': georef['rmsM'], 'georefMaxResidualM': georef['maxResidualM'],

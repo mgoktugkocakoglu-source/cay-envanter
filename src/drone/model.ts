@@ -154,6 +154,8 @@ export interface DroneOrthophoto {
     georefRmsM: number;
     georefMaxResidualM: number;
     method: string;
+    /** Ground surface under the image for a 3D view: relative heights, 16 bit over the red (high) and green (low) channels. */
+    terrain?: { image: string; width: number; height: number; cellM: number; reliefM: number; note: string };
 }
 
 /** A person's (or an assistant's) reading of the frames. `verified` is true only after an expert or a field visit. */

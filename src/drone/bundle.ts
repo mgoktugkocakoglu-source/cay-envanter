@@ -12,7 +12,7 @@ export function loadDroneForBundle(neighborhoodDir: string): { block: DroneVerif
     const block = JSON.parse(readFileSync(path, 'utf8')) as DroneVerificationFile;
     const evidence = block.sources.map((s) => {
         const dir = join(neighborhoodDir, 'drone', 'evidence', s.id);
-        return { project: s.id, dir, files: existsSync(dir) ? readdirSync(dir).filter((f) => /\.(jpe?g|mp4|webp)$/i.test(f)) : [] };
+        return { project: s.id, dir, files: existsSync(dir) ? readdirSync(dir).filter((f) => /\.(jpe?g|mp4|webp|png)$/i.test(f)) : [] };
     });
     return { block, evidence };
 }
