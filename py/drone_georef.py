@@ -272,7 +272,8 @@ def main():
     print('parcels fully in view on the reference frame:', len(in_view))
     footprints = [[en(*p[:2]) for p in ring_of(b['geometry'])] for b in buildings]
     return {'root': root, 'project': P, 'rec': rec, 'cam': cam, 'images': images, 'time_of': time_of, 'project_ring': project, 'rings': near, 'footprints': footprints, 'halfExtentM': half,
-            'to_map': lambda xyz: s * complex(xyz @ e1, xyz @ e2) + t, 'height_m': lambda xyz: float(xyz @ up) * scale, 'rmsM': rms}
+            'to_map': lambda xyz: s * complex(xyz @ e1, xyz @ e2) + t, 'height_m': lambda xyz: float(xyz @ up) * scale, 'rmsM': rms,
+            'level': {'e1': e1, 'e2': e2, 'up': up, 's': s, 't': t, 'scale': scale}, 'surface': surface, 'cellM': cell, 'origin': (lon0, lat0)}
 
 
 def slug(text):

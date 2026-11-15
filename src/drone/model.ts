@@ -137,6 +137,25 @@ export interface DroneGeorefFile extends DroneGeoreferenceSummary {
     parcels: Record<string, { handOverlap: { iou: number; handInsideCadastre: number; cadastreInsideHand: number }; track: Array<{ t: number; polygon: Array<[number, number]> }> }>;
 }
 
+/**
+ * Approximate orthophoto of the video (py/drone_ortho.py): each ground cell coloured from the solved frame that sees
+ * it best, through the sparse ground surface. A map-aligned view for a reviewer; not a survey product.
+ */
+export interface DroneOrthophoto {
+    image: string;
+    width: number;
+    height: number;
+    resolutionM: number;
+    /** [lon, lat] corners (WGS84). */
+    bounds: { southWest: [number, number]; northEast: [number, number] };
+    coveredHa: number;
+    framesUsed: number;
+    shot: [number, number];
+    georefRmsM: number;
+    georefMaxResidualM: number;
+    method: string;
+}
+
 /** A person's (or an assistant's) reading of the frames. `verified` is true only after an expert or a field visit. */
 export interface DroneReview {
     parcel: string;
@@ -194,6 +213,7 @@ export interface DroneVerificationFile {
     capture: DroneCapture;
     clip: DroneClip | null;
     georeference: DroneGeoreferenceSummary | null;
+    orthophoto: DroneOrthophoto | null;
     /** What this source can and cannot support, in plain statements. */
     suitability: Array<{ topic: string; verdict: 'ok' | 'limited' | 'no'; text: string }>;
     validation: DroneValidation & { usable: boolean };
@@ -232,7 +252,7 @@ export function suitabilityOf(c: DroneCapture, v: DroneValidation, usable: boole
 }
 
 /** Binds the analysis, the reviews and the parcel records into the verification file. */
-export function buildDroneVerification(input: { analysis: DroneAnalysisFile; georef: DroneGeorefFile | null; reviews: DroneReview[]; records: DroneParcelRecord[]; licenceSource: 'demo' | 'caykur'; imageryBaseUrl: string; analysedAt: string }): DroneVerificationFile {
+export function buildDroneVerification(input: { analysis: DroneAnalysisFile; georef: DroneGeorefFile | null; ortho?: DroneOrthophoto | null; reviews: DroneReview[]; records: DroneParcelRecord[]; licenceSource: 'demo' | 'caykur'; imageryBaseUrl: string; analysedAt: string }): DroneVerificationFile {
     const { analysis, reviews, records, georef } = input;
     const georeference: DroneGeoreferenceSummary | null = georef ? (({ parcels: _parcels, ...rest }) => rest)(georef) : null;
     const v = analysis.validation;
@@ -324,6 +344,7 @@ export function buildDroneVerification(input: { analysis: DroneAnalysisFile; geo
         capture: analysis.capture,
         clip: analysis.clip ?? null,
         georeference,
+        orthophoto: input.ortho ?? null,
         suitability: suitabilityOf(analysis.capture, v, usable, georeference),
         validation: { ...v, usable },
         licenceSource: input.licenceSource,

@@ -2,7 +2,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSyn
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import type { AuditFile } from './audit-licensing.ts';
-import { buildDroneVerification, type DroneAnalysisFile, type DroneGeorefFile, type DroneParcelRecord, type DroneReview } from '../drone/model.ts';
+import { buildDroneVerification, type DroneAnalysisFile, type DroneGeorefFile, type DroneOrthophoto, type DroneParcelRecord, type DroneReview } from '../drone/model.ts';
 import { NeighborhoodStore, slugify } from '../library/store.ts';
 
 const USAGE = `
@@ -29,6 +29,9 @@ function main(): void {
     // Optional: approximate cadastre overlay (py/drone_sfm.py + py/drone_georef.py).
     const georefPath = join(values.project, 'out', 'georef.json');
     const georef = existsSync(georefPath) ? (JSON.parse(readFileSync(georefPath, 'utf8')) as DroneGeorefFile) : null;
+    // Optional: approximate orthophoto (py/drone_ortho.py). Only what the site draws is passed on.
+    const orthoPath = join(values.project, 'out', 'ortho.json');
+    const ortho = existsSync(orthoPath) ? (({ times: _times, rules: _rules, ...rest }) => rest as DroneOrthophoto)(JSON.parse(readFileSync(orthoPath, 'utf8'))) : null;
     const reviewPath = join(values.project, 'review.json');
     const reviews = existsSync(reviewPath) ? (JSON.parse(readFileSync(reviewPath, 'utf8')) as DroneReview[]) : [];
     const { province, district, neighborhood, id } = analysis.project;
@@ -52,11 +55,11 @@ function main(): void {
     if (missing.length) console.log(`Kayıtta bulunamayan parseller atlandı: ${missing.join(', ')} (audit-licensing --parcels ile eklenebilir)`);
 
     const code = [province, district, neighborhood].map(slugify).join('-');
-    const file = buildDroneVerification({ analysis, georef, reviews, records, licenceSource: audit.licenceSource, imageryBaseUrl: `/inventory-imagery/${code}/drone/${id}/`, analysedAt: statSync(analysisPath).mtime.toISOString().slice(0, 10) });
+    const file = buildDroneVerification({ analysis, georef, ortho, reviews, records, licenceSource: audit.licenceSource, imageryBaseUrl: `/inventory-imagery/${code}/drone/${id}/`, analysedAt: statSync(analysisPath).mtime.toISOString().slice(0, 10) });
     const outDir = join(store.dir, 'drone');
     const evidenceDir = join(outDir, 'evidence', id);
     mkdirSync(evidenceDir, { recursive: true });
-    const images = readdirSync(join(values.project, 'out')).filter((f) => /\.(jpe?g|mp4)$/i.test(f));
+    const images = readdirSync(join(values.project, 'out')).filter((f) => /\.(jpe?g|mp4|webp)$/i.test(f));
     for (const f of images) copyFileSync(join(values.project, 'out', f), join(evidenceDir, f));
     writeFileSync(join(outDir, 'verification.json'), JSON.stringify(file));
 
@@ -64,6 +67,7 @@ function main(): void {
     console.log(`Kaynak: ${file.sources[0]?.title} · ${file.capture.width}×${file.capture.height}, ${file.capture.bitrateMbps} Mb/sn · konum verisi: yok`);
     console.log(`Otomatik sınıflandırıcı (çekim içi çapraz sınama): doğruluk %${Math.round(v.accuracy * 100)} · çay yakalama %${Math.round(v.teaRecall * 100)} · çay kesinliği %${Math.round(v.teaPrecision * 100)} → ${v.usable ? 'kullanılabilir' : 'DENEYSEL (haritayı renklendirmez)'}`);
     if (file.georeference) console.log(`Yaklaşık kadastro bindirmesi: ${file.georeference.model.frames} kare çözüldü · ${file.georeference.controls.length} kontrol binası · ortalama hata ${file.georeference.rmsM} m · karede tam görünen ${file.georeference.parcelsInView.length} parsel`);
+    if (file.orthophoto) console.log(`Yaklaşık ortofoto: ${file.orthophoto.coveredHa} ha · ${file.orthophoto.framesUsed} kare · ${file.orthophoto.resolutionM} m/piksel`);
     for (const p of file.parcels) {
         console.log(`${p.block}/${p.parcel} · kayıt: ${p.nature}, ${p.licence.licensed ? 'ruhsatlı' : 'ruhsatsız'} · video ${p.video.visible[0]}–${p.video.visible[1]} sn · sınıf: ${p.class} (${p.classSource}, güven ${p.confidence}) · otomatik: ${p.automatic.class} (çay payı %${Math.round(p.automatic.teaShareMedian * 100)}) · durum: ${p.status}`);
         if (p.discrepancy) console.log(`  Uyuşmazlık: ${p.discrepancy}`);
