@@ -59,7 +59,8 @@ def main():
 
     def to_frame(im, E, N, Z):
         """Map cells → pixel coordinates in one frame, with the depth along the optical axis."""
-        w = (E + 1j * N - t) / s
+        zc = E + 1j * N
+        w = (zc - L['correct'](zc).reshape(zc.shape) - t) / s
         X = w.real[..., None] * e1 + w.imag[..., None] * e2 + (Z / scale)[..., None] * up
         M = im.cam_from_world().matrix()
         pc = X @ M[:, :3].T + M[:, 3]

@@ -35,6 +35,22 @@ RULES = {
     # Further groups of marks are looked for this far around where the first fit puts them.
     'searchRadiusM': 120,
     'dropAboveM': 8,
+    # Local correction between the controls: candidate reach of one control (metres) and the weight that pulls the
+    # correction back to zero away from all of them. Used only when it predicts left-out controls clearly better.
+    'warpSigmasM': [40, 60, 90, 130, 180],
+    'warpPrior': 0.15,
+    'warpMinGain': 0.1,
+    # Reference frames for the site: how many, how far a parcel may be, how small it may get on screen, and how much
+    # the ground may rise above the line of sight before the parcel counts as hidden.
+    'referenceFrames': 5,
+    'referenceMaxDistanceM': 300,
+    'referenceMinPixels': 900,
+    'referenceHiddenMarginM': 4.0,
+    'referenceGapS': 12,
+    # A parcel is drawn only where the ground under it was really solved (share of its corners on cells with model
+    # points) and where the camera looks down on it steeply enough for the outline to keep its shape.
+    'referenceMinSupport': 0.7,
+    'referenceMinViewSine': 0.38,
     'groundCellM': 5.0,
     'groundPercentile': 20,
     # Footprints this far around the origin are candidates for the marked buildings.
@@ -180,11 +196,34 @@ def main():
             break
     scale = abs(s)
     rms = float(np.sqrt(np.mean(res ** 2)))
+    # One similarity cannot follow a model that bends slightly along a long flight. What it leaves at each control
+    # is spread to the ground between the controls; whether that helps is tested on controls left out one at a time.
+    ctl_a = np.array([picked[p[0]] for p in pairs])
+    ctl_b = np.array([targets[p[1]] for p in pairs])
+    ctl_r = ctl_b - (s * ctl_a + t)
+
+    def warp(z, sigma, skip=None):
+        z = np.atleast_1d(np.asarray(z, complex)).ravel()
+        out = np.empty(len(z), complex)
+        for i in range(0, len(z), 200000):
+            w = np.exp(-np.abs(z[i:i + 200000, None] - ctl_b[None, :]) ** 2 / (2 * sigma ** 2))
+            if skip is not None:
+                w[:, skip] = 0
+            out[i:i + 200000] = (w * ctl_r).sum(1) / (w.sum(1) + RULES['warpPrior'])
+        return out
+
+    left_out = {sg: float(np.sqrt(np.mean([abs(ctl_r[k] - warp(ctl_b[k], sg, skip=k)[0]) ** 2 for k in range(len(pairs))]))) for sg in RULES['warpSigmasM']}
+    sigma = min(left_out, key=left_out.get)
+    use_warp = left_out[sigma] < rms * (1 - RULES['warpMinGain'])
+    correct = (lambda z: warp(z, sigma)) if use_warp else (lambda z: np.zeros(np.size(z), complex))
+    check_rms = left_out[sigma] if use_warp else rms
+    print('left-out control error by reach:', {k: round(v, 1) for k, v in left_out.items()}, '->', f'local correction, reach {sigma} m' if use_warp else 'no local correction')
     print(f'level: mean camera roll {tilt:.2f}° · {len(pairs)} of {marked_total} marked buildings matched · rms {rms:.1f} m · scale {scale:.1f} m/unit')
 
     # 3. ground surface from the model's low points
     pts = np.array([p.xyz for p in rec.points3D.values() if p.track.length() >= 4 and p.error < 1.5 and in_shot(p)])
     zz = s * (pts @ e1 + 1j * (pts @ e2)) + t
+    zz = zz + correct(zz)
     E, N, Z = zz.real, zz.imag, (pts @ up) * scale
     cell = RULES['groundCellM']
     reach = max(np.percentile(np.abs(E), 98), np.percentile(np.abs(N), 98)) + RULES['extentMarginM']
@@ -214,8 +253,9 @@ def main():
             dense += [(a1 + (a2 - a1) * q / k, b1 + (b2 - b1) * q / k) for q in range(k)]
         T = im.cam_from_world()
         uv = []
-        for e, nn in dense:
-            w = (complex(e, nn) - t) / s
+        shift = correct(np.array([complex(e, nn) for e, nn in dense]))
+        for (e, nn), c in zip(dense, shift):
+            w = (complex(e, nn) - c - t) / s
             pc = T * (w.real * e1 + w.imag * e2 + (height(e, nn) / scale) * up)
             if pc[2] <= 0:
                 return None
@@ -261,19 +301,79 @@ def main():
         result[k] = {'handOverlap': {'iou': round(float((m1 & m2).sum() / (m1 | m2).sum()), 2), 'handInsideCadastre': round(float((m1 & m2).sum() / m1.sum()), 2), 'cadastreInsideHand': round(float((m1 & m2).sum() / m2.sum()), 2)}, 'track': track}
         print(k, result[k]['handOverlap'], 'frames', len(track))
     cv2.imwrite(os.path.join(out_dir, 'cadastre-reference.jpg'), frame, [cv2.IMWRITE_JPEG_QUALITY, 90])
+
+    # 5. reference frames for the site: untouched frames, with the outlines of the parcels each one really shows as
+    #    data. A parcel behind a ridge projects into the frame too; it is left out, as is one too far to place.
+    centres = {k: np.mean(r, axis=0) for k, r in near.items()}
+    steps = np.linspace(0.05, 0.95, 20)
+    solved = cv2.dilate((hole == 0).astype(np.uint8), np.ones((3, 3), np.uint8))
+    cell_of = lambda v: int(np.clip((v + half) / cell, 0, n - 1))
+    support = {k: float(np.mean([solved[cell_of(b), cell_of(a)] for a, b in list(r) + [tuple(centres[k])]])) for k, r in near.items()}
+
+    def shown(im):
+        C = im.projection_center()
+        cz = s * complex(C @ e1, C @ e2) + t
+        cz = cz + correct(cz)[0]
+        ch = float(C @ up) * scale
+        found = {}
+        for k, (ce, cn) in centres.items():
+            if math.hypot(ce - cz.real, cn - cz.imag) > RULES['referenceMaxDistanceM']:
+                continue
+            ground_z = height(ce, cn)
+            reach = math.sqrt((ce - cz.real) ** 2 + (cn - cz.imag) ** 2 + (ground_z - ch) ** 2)
+            if support[k] < RULES['referenceMinSupport'] or (ch - ground_z) / reach < RULES['referenceMinViewSine']:
+                continue
+            if any(height(cz.real + (ce - cz.real) * q, cz.imag + (cn - cz.imag) * q) > ch + (ground_z - ch) * q + RULES['referenceHiddenMarginM'] for q in steps):
+                continue
+            uv = project(im, near[k])
+            if uv is None or cv2.contourArea(uv) < RULES['referenceMinPixels']:
+                continue
+            if np.mean((uv[:, 0] >= 0) & (uv[:, 0] < W) & (uv[:, 1] >= 0) & (uv[:, 1] < H)) < 0.6:
+                continue
+            found[k] = uv
+        return found
+
+    candidates = {im.name: (im, shown(im)) for im in images[::3]}
+    chosen, covered = [], set()
+    for _ in range(RULES['referenceFrames']):
+        free = [c for c in candidates.values() if all(abs(time_of(c[0]) - time_of(o[0])) >= RULES['referenceGapS'] for o in chosen)]
+        if not free:
+            break
+        best = max(free, key=lambda c: len(set(c[1]) - covered))
+        if not set(best[1]) - covered:
+            break
+        chosen.append(best)
+        covered |= set(best[1])
+    chosen.sort(key=lambda c: time_of(c[0]))
+    for f in os.listdir(out_dir):
+        if f.startswith('reference-') and f.endswith('.jpg'):
+            os.remove(os.path.join(out_dir, f))
+    reference_frames = []
+    for im, found in chosen:
+        name = f'reference-{int(round(time_of(im) * 10)):05d}.jpg'
+        cv2.imwrite(os.path.join(out_dir, name), cv2.imread(os.path.join(root, 'sfm', 'images', im.name)), [cv2.IMWRITE_JPEG_QUALITY, 93])
+        outlines = []
+        for k, uv in sorted(found.items()):
+            simple = cv2.approxPolyDP(uv.reshape(-1, 1, 2), 0.8, True).reshape(-1, 2)
+            outlines.append({'parcel': k, 'pixels': int(cv2.contourArea(uv)), 'polygon': [[round(float(x), 1), round(float(y), 1)] for x, y in simple]})
+        reference_frames.append({'t': time_of(im), 'image': name, 'width': W, 'height': H, 'outlines': outlines})
+    print('reference frames:', [(f['t'], len(f['outlines'])) for f in reference_frames], '· parcels shown in at least one:', len(covered))
     json.dump({
         'method': 'Videodan kamera konumları çözüldü (structure from motion); model, karede işaretlenen binaların harita üzerindeki bina izleriyle eşleştirilmesiyle haritaya bağlandı. Yaklaşık bindirmedir; ölçüm değildir.',
         'rules': RULES,
         'model': {'frames': len(images), 'points': rec.num_points3D(), 'reprojectionErrorPx': round(rec.compute_mean_reprojection_error(), 2), 'shot': [time_of(images[0]), time_of(images[-1])], 'meanRollDeg': round(tilt, 2)},
         'controls': [{'building': p[0], 'target': p[1], 'residualM': round(float(r), 1)} for p, r in zip(pairs, res)],
-        'markedBuildings': marked_total, 'rmsM': round(rms, 1), 'maxResidualM': round(float(res.max()), 1), 'scaleMPerUnit': round(scale, 2),
+        'markedBuildings': marked_total, 'rmsM': round(rms, 1),
+        # Error at a control predicted from the other controls: what to expect between them.
+        'localCorrection': {'used': bool(use_warp), 'reachM': sigma if use_warp else None, 'leftOutRmsM': round(check_rms, 1)}, 'maxResidualM': round(float(res.max()), 1), 'scaleMPerUnit': round(scale, 2),
+        'referenceFrames': reference_frames,
         'referenceT': time_of(ref), 'referenceImage': 'cadastre-reference.jpg', 'parcelsInView': sorted(in_view), 'parcels': result,
     }, open(os.path.join(out_dir, 'georef.json'), 'w', encoding='utf8'), ensure_ascii=False)
     print('parcels fully in view on the reference frame:', len(in_view))
     footprints = [[en(*p[:2]) for p in ring_of(b['geometry'])] for b in buildings]
     return {'root': root, 'project': P, 'rec': rec, 'cam': cam, 'images': images, 'time_of': time_of, 'project_ring': project, 'rings': near, 'footprints': footprints, 'halfExtentM': half,
-            'to_map': lambda xyz: s * complex(xyz @ e1, xyz @ e2) + t, 'height_m': lambda xyz: float(xyz @ up) * scale, 'rmsM': rms,
-            'level': {'e1': e1, 'e2': e2, 'up': up, 's': s, 't': t, 'scale': scale}, 'surface': surface, 'cellM': cell, 'origin': (lon0, lat0)}
+            'to_map': lambda xyz: (lambda z: z + correct(z)[0])(s * complex(xyz @ e1, xyz @ e2) + t), 'height_m': lambda xyz: float(xyz @ up) * scale, 'rmsM': rms,
+            'level': {'e1': e1, 'e2': e2, 'up': up, 's': s, 't': t, 'scale': scale, 'correct': correct}, 'surface': surface, 'cellM': cell, 'origin': (lon0, lat0)}
 
 
 def slug(text):

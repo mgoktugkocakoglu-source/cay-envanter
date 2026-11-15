@@ -18,7 +18,7 @@ Sınıflar: çay mevcut · çay bulunamadı · kısmen çay mevcut · belirsiz. 
 `;
 
 function main(): void {
-    const { values } = parseArgs({ options: { project: { type: 'string' } } });
+    const { values } = parseArgs({ options: { project: { type: 'string' }, ortho: { type: 'boolean', default: false } } });
     if (!values.project) {
         console.log(USAGE);
         process.exit(1);
@@ -31,7 +31,8 @@ function main(): void {
     const georef = existsSync(georefPath) ? (JSON.parse(readFileSync(georefPath, 'utf8')) as DroneGeorefFile) : null;
     // Optional: approximate orthophoto (py/drone_ortho.py). Only what the site draws is passed on.
     const orthoPath = join(values.project, 'out', 'ortho.json');
-    const ortho = existsSync(orthoPath) ? (({ times: _times, rules: _rules, ...rest }) => rest as DroneOrthophoto)(JSON.parse(readFileSync(orthoPath, 'utf8'))) : null;
+    // Published only with --ortho: built from oblique video it shows seams and leaning roofs a reviewer can take for real shifts.
+    const ortho = values.ortho && existsSync(orthoPath) ? (({ times: _times, rules: _rules, ...rest }) => rest as DroneOrthophoto)(JSON.parse(readFileSync(orthoPath, 'utf8'))) : null;
     const reviewPath = join(values.project, 'review.json');
     const reviews = existsSync(reviewPath) ? (JSON.parse(readFileSync(reviewPath, 'utf8')) as DroneReview[]) : [];
     const { province, district, neighborhood, id } = analysis.project;
