@@ -31,7 +31,8 @@
         "pruning-history": "node src/cli/check-pruning-history.ts",
         "audit-licensing": "node src/cli/audit-licensing.ts",
         "verify-drone": "node src/cli/verify-drone.ts",
-        "check-compliance": "node src/cli/check-compliance.ts"
+        "check-compliance": "node src/cli/check-compliance.ts",
+        "remote-evidence-coverage": "node src/cli/remote-evidence-coverage.ts"
     },
     "dependencies": {
         "@google/earthengine": "^1.7.47",

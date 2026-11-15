@@ -107,3 +107,7 @@ register status and unverified drone reviews remain unchanged. Rerun `check-comp
 - Drone readings are unverified; no systematic field validation exists for any module.
 - Drone video 0–128 s and 340–409 s are not processed.
 - Proposed next: field verification loop, work queue with assignments, per-parcel PDF record.
+
+## Remote-only licensing workflow
+
+No new field-verification workflow is planned. Use existing satellite observations and drone imagery; planned mapping flights may supply better evidence later. Historical field notes remain source records, not a required workflow. `npm run remote-evidence-coverage -- --province Trabzon --district Of --neighborhood Çataldere` inventories only local imagery and monthly series into `remote-evidence/coverage.json`; it does not change classifications or any site bundle.
