@@ -57,6 +57,18 @@ Licensing chain, in order: `audit-licensing` → (drone) `py/drone_sfm.py` → `
   `../cayhesabim`, do not merge to `main` of the shared remote.
 - No purchases, no paid services, no new accounts.
 
+## Two agents work on this code
+
+Claude Code and Codex both work in this checkout and in `../cayhesabim`, at different times, for the same owner.
+Neither sees the other's conversation; the repositories are the only shared state.
+
+- Before starting, run `git status` and `git log --oneline -10` in both checkouts and read what changed since your last commit.
+- Uncommitted changes you did not make belong to the other agent or the owner: leave them, do not revert, stash or reformat them. Ask the owner if they block you.
+- Commit your own work in small commits with a message that says what the change does, so the other agent can follow it.
+- Do not rewrite history (no amend of others' commits, no rebase, no force push).
+- When you change how something is run or a standing rule, update this file in the same commit.
+- Long-running local services (database, API, Vite) may have been started by the other agent: check the port before starting a second copy.
+
 ## Conventions
 
 - 4-space indent, single quotes, trailing commas; match the surrounding file.
