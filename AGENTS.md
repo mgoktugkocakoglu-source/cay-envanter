@@ -115,3 +115,7 @@ No new field-verification workflow is planned. Use existing satellite observatio
 ## Existing relative terrain export
 
 export-site adds remoteTerrain from existing drone project out/ortho.json and its published height PNG. It does not run reconstruction or enable the oblique-video orthophoto. Missing local height data yields null. Heights remain relative and georeferencing residuals are not independent accuracy. Follow the usual export, sync, build and restart flow.
+
+## Combined pruning v2
+
+combine-pruning reads cached module outputs only. Matching events need overlapping observation intervals and nearby change dates; confirmed is internal shorthand for method agreement, never independent truth. Only pruned/deep_pruning plus deep pixels can qualify, and the prior-season test must be available and negative. Light or pending pixels cannot become deep cuts. All positive classes undergo seasonal-repeat screening. Supported target area uses the lower bound of agreed deep cuts; probable deep area is a separate scenario. Older validation and retrospective history are not exported with v2 because they use different promotion rules; regenerate compatible diagnostics before enabling them. Fusion and pixel source outputs remain untouched.

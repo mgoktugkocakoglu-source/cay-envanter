@@ -11,10 +11,11 @@ Kullanım:
 
 Birleşik budama kararı (ayrı modül): çok-sensör kararı (fuse-pruning) ile piksel taramasını (scan-pixels) bahçe
 başına tek karara indirir. İki modülün hiçbirini değiştirmez; yalnızca çıktılarını okur.
-  kesin    : iki modül de aynı olayı gördü (değişim tarihleri ${45} gün içinde)
+  uyumlu   : iki modül derin kesimde ve örtüşen gözlem aralığında uyuştu (değişim tarihleri ${45} gün içinde)
   muhtemel : yalnız biri gördü (çok-sensör budandı/olası ya da piksel taraması derin budama)
   hafif    : yalnız piksel taraması, hızlı toparlanan kesim (1/7 hesabına girmez)
   mevsimsel: “muhtemel” olacaktı ama aynı piksellerde aynı düşüş bir önceki sezonda, aynı dönemde de var (1/7 hesabına girmez)
+Bekleyen ve hafif kesimler hedef hesabına girmez. Uyumlu alanın alt sınırı desteklenen hesaptır; muhtemel alan yalnız senaryodur.
 Alan piksel taramasının çizdiği kümeden, o yoksa çok-sensörün alan çıktısından gelir. Radar/koherans yalnızca tanıktır.
 Çıktı: pruning-combined/season-<yyyy-yy>.json
 `;
@@ -22,12 +23,13 @@ Alan piksel taramasının çizdiği kümeden, o yoksa çok-sensörün alan çık
 export const COMBINED_RULES = {
     /** Two modules saw the same event when their change dates lie within this many days. */
     sameEventDays: 45,
+    version: 2, // Invalidate validation/history produced with the former promotion rules.
     /** Radar witness: the garden's coherence rise / VH drop beyond the 90 % bar of quiet tea (block-scale radar test). */
     witnessZ: 1.2816,
     /**
      * Seasonal pattern: a "probable" detection whose step is also there a year earlier on the same pixels (at least this
      * share of the drop) is the garden's yearly pattern (shadow, aspect, early flush), not a pruning. Needs only the
-     * previous season, so it is known at decision time. Confirmed detections are not touched.
+     * previous season, so it is known at decision time. All positive detections are checked; agreement is not independent validation.
      */
     seasonalRepeatShare: 0.6,
 };
@@ -140,14 +142,22 @@ export function combine(fusion: FusionSeasonFile, pixelGardens: PixelGardenLite[
         const pPos = !!px && (px.verdict === 'deep' || px.verdict === 'light' || px.verdict === 'pending') && px.best !== null;
         const main = px && px.mainCluster !== null ? (px.clusters[px.mainCluster] ?? null) : null;
         // Same event: the pixel bracket touches the fusion change date within the tolerance.
-        const same = fPos && pPos && !!v.changeDate && Math.min(dayGap(px!.best!.date, v.changeDate), dayGap(px!.best!.lastBefore ?? px!.best!.date, v.changeDate)) <= COMBINED_RULES.sameEventDays;
+        const fusionFrom = v.lastBeforeAt ?? v.changeDate;
+        const fusionTo = v.firstAfterAt ?? v.changeDate;
+        const pixelFrom = px?.best?.lastBefore ?? px?.best?.date;
+        const pixelTo = px?.best?.date;
+        // Nearby point estimates alone do not establish the same event: observation intervals must overlap.
+        const same = fPos && pPos && !!v.changeDate && !!fusionFrom && !!fusionTo && !!pixelFrom && !!pixelTo
+            && fusionFrom <= fusionTo && pixelFrom <= pixelTo
+            && fusionFrom <= pixelTo && pixelFrom <= fusionTo
+            && dayGap(pixelTo, v.changeDate) <= COMBINED_RULES.sameEventDays;
         const agreement: CombinedAgreement = fPos && pPos ? (same ? 'both' : 'both_other_dates') : fPos ? 'fusion_only' : pPos ? 'pixel_only' : 'neither';
         let cls: CombinedClass;
         let kind: CombinedGarden['kind'] = null;
         let reason: string;
         if (agreement === 'both') {
-            cls = 'confirmed';
-            kind = 'deep';
+            cls = v.class === 'pruned' && v.kind === 'deep_pruning' && px!.verdict === 'deep' ? 'confirmed' : 'probable';
+            kind = px!.verdict === 'deep' ? 'deep' : null;
             reason = `İki modül de aynı kesimi gördü: çok-sensör “${v.class === 'pruned' ? 'budandı' : 'olası'}” (değişim ${v.changeDate}), piksel taraması ${px!.best!.lastBefore ?? '—'} → ${px!.best!.date} arasında ${px!.prunedM2} m²`;
         } else if (agreement === 'both_other_dates') {
             cls = 'probable';
@@ -171,9 +181,19 @@ export function combine(fusion: FusionSeasonFile, pixelGardens: PixelGardenLite[
             cls = 'none';
             reason = live ? 'Şimdiye kadar budama görülmedi (sezon sürüyor)' : 'İki modül de budama görmedi';
         }
+        // Preserve the pixel evidence: neither pending recovery nor a light cut proves deep pruning.
+        if (pPos && px!.verdict === 'light') {
+            cls = fPos ? 'probable' : 'light';
+            kind = 'light';
+            reason += ' · piksel okuması hafif kesim; derin budama sayılmaz';
+        } else if (pPos && px!.verdict === 'pending') {
+            cls = 'probable';
+            kind = null;
+            reason += ' · toparlanma bekleniyor; kesim türü ve hedef alanı henüz belirlenmedi';
+        }
         // Seasonal pattern: a would-be "probable" whose step repeats a year earlier on the same pixels is not a pruning.
         let seasonal: CombinedGarden['seasonal'] = null;
-        if (cls === 'probable' && seasonalOf) {
+        if ((cls === 'confirmed' || cls === 'probable' || cls === 'light') && seasonalOf) {
             const cells = agreement !== 'fusion_only' && px && px.mainCluster !== null ? (px.px ?? []).filter((x) => x[5] > 0 && x[6] === px.mainCluster).map((x) => [x[0], x[1]] as [number, number]) : [];
             const useCluster = cells.length > 0;
             const date = useCluster ? px!.best!.date : (v.firstAfterAt ?? v.changeDate);
@@ -187,6 +207,10 @@ export function combine(fusion: FusionSeasonFile, pixelGardens: PixelGardenLite[
                     reason += ` · aynı ${useCluster ? 'piksellerde' : 'bahçede'} bir önceki sezonun aynı döneminde de benzer düşüş var (bu sezon ${check.drop}, önceki sezon ${check.prevStep}): mevsimsel desen, 1/7 hesabına girmez`;
                 }
             }
+        }
+        if (cls === 'confirmed' && (!seasonal || seasonal.repeat === null)) {
+            cls = 'probable';
+            reason += ' · mevsimsel tekrar sınaması yetersiz; yöntem uyumu doğrulanamadı';
         }
         // Bracket: the overlap when both saw the same event, else the one that saw it.
         let bracket: CombinedGarden['bracket'] = null;
@@ -221,7 +245,7 @@ export function combine(fusion: FusionSeasonFile, pixelGardens: PixelGardenLite[
             agreement,
             bracket,
             area,
-            countedM2: counts && area ? Math.round(area.m2 * (1 - reusedShare)) : 0,
+            countedM2: counts && area ? Math.round((cls === 'confirmed' ? area.lowM2 : area.m2) * (1 - reusedShare)) : 0,
             fusion: { class: v.class, kind: v.kind ?? null, z: v.z, changeDate: v.changeDate, lastBeforeAt: v.lastBeforeAt, firstAfterAt: v.firstAfterAt, unit: g.unit, unitAreaM2: g.unitAreaM2, reusedShare },
             pixel: px ? { verdict: px.verdict, date: px.best?.date ?? null, lastBefore: px.best?.lastBefore ?? null, score: px.best?.score ?? null, prunedM2: px.prunedM2, clusters: px.clusters.length, kind: main?.kind ?? null, confidence: main?.confidence ?? null } : null,
             radar,
@@ -331,7 +355,7 @@ async function main(): Promise<void> {
         dataThrough: pixel?.dataThrough ?? null,
         liveFalseAlarms: live && existsSync(join(pixDir, `validation-${season}-cv-mirror.json`)) ? (JSON.parse(readFileSync(join(pixDir, `validation-${season}-cv-mirror.json`), 'utf8')) as { positives: unknown[] }).positives.length : null,
         generatedAt: new Date().toISOString(),
-        method: 'combined-fusion-pixel',
+        method: 'combined-fusion-pixel-v2',
         rules: { ...COMBINED_RULES, pruningRatio: fusion.rules.pruningRatio },
         sources: { fusion: !live, pixel: !!pixel, radarCheck: !!radar },
         summary: {
@@ -343,7 +367,8 @@ async function main(): Promise<void> {
             producers: Object.fromEntries(statuses.map((s) => [s, producers.filter((p) => p.status === s).length])) as Record<CombinedProducerStatus, number>,
             producersChanged: live ? 0 : producers.filter((p) => fusionOpen(p.fusionDecision) !== (p.status === 'met' || p.status === 'met_with_probable')).length,
         },
-        validation: existsSync(validationPath) ? (JSON.parse(readFileSync(validationPath, 'utf8')) as CombinedValidation) : null,
+        // Earlier synthetic/mirror validation uses different promotion rules; never present it as current.
+        validation: null,
         gardens,
         producers,
     };
