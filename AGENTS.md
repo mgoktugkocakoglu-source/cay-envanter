@@ -137,7 +137,7 @@ conflict nor block agreement. Çataldere, 16 Nov 2026: agreed 64, single source 
 - Compliance rule set (`src/compliance/model.ts`, K1–K10) is a draft; its legal basis is not yet matched with ÇAYKUR.
 - Drone readings are unverified; no systematic field validation exists for any module.
 - Drone video 0–128 s and 340–409 s are not processed.
-- Proposed next: field verification loop, work queue with assignments, per-parcel PDF record.
+- Land cover: hazelnut vs tea confusion needs field labels; the licence audit still uses its own detector (src/audit/tea-evidence.ts), not this module.
 
 ## Remote-only licensing workflow
 
@@ -170,3 +170,37 @@ chronological order → `npm run pruning-history` → `export-site`. A validatio
 `rulesVersion` equals `COMBINED_RULES.version`; history only when it is newer than every season file.
 `node scripts/check-combined-rules.mjs` checks rule logic (21 fixtures); it is not an accuracy measurement.
 
+
+## Land-cover module (tea or not, and what else grows there)
+
+Separate module; reads the parcel library and Earth Engine, writes only `<neighbourhood>/land-cover/`. No TKGM requests.
+
+```bash
+npm run sample-cover -- --province Trabzon --district Of --neighborhood Çataldere   # EE: samples.csv (labelled pixels, district pool) + pixels.csv (every pixel of the target parcels); ~30 min
+.venv/Scripts/python.exe py/cover_experiments.py data/library/trabzon/of/cataldere   # compares feature families and learners (~15 min); add --detail to redo only the chosen model's detail
+.venv/Scripts/python.exe py/cover_classify.py data/library/trabzon/of/cataldere      # cover.json: per parcel tea reading + cover shares + model card
+```
+
+`export-site` ships `cover.json` as the `landCover` block. The service account may not export tables, so rows come back
+through `reduceColumns(toList)` with numeric properties only (`rowsOf` in `src/cli/sample-cover.ts`).
+
+Labels: tea / hazelnut / forest from clean deed titles (pixels 3 m inside the parcel); grass / crop / built / other from
+ESA WorldCover, never inside tea-titled parcels. 63 bands (`src/cover/features.ts`): seasonal Sentinel-2 composites, NDVI
+percentiles and monthly climatology, evergreen ratio, Sentinel-1 for four seasons plus its spread. No terrain, no position.
+Measured by grouped 5-fold cross-validation (a parcel is never in train and test). Çataldere, 17 Nov 2026, 8 529 pixels:
+
+| features (learner) | tea-vs-rest accuracy | tea recall | tea precision | tea F1 |
+|---|---|---|---|---|
+| all 63 bands (boosting) — **used** | 86.5 % | 85.9 % | 78.0 % | 0.815 ± 0.053 |
+| optical 47 (boosting) | 85.1 % | 85.0 % | 76.1 % | 0.800 |
+| all 63 (random forest) | 84.4 % | 75.2 % | 79.4 % | 0.770 |
+| NDVI only, 20 bands (RF) | 83.0 % | 73.6 % | 77.2 % | 0.750 |
+| top-10 optical (RF) | 82.0 % | 71.7 % | 76.0 % | 0.734 |
+| radar only, 16 bands (RF) | 71.7 % | 50.9 % | 62.1 % | 0.555 |
+
+Parcel level (held-out titled parcels with ≥ 3 pixels, "present" = tea share ≥ 0.3): 284 of 300 tea parcels found
+(94.7 %), precision 90.7 %; but 24 of 38 hazelnut-titled and 5 of 21 forest-titled parcels read as tea. That is the weak
+spot: either the model cannot split hazelnut from tea, or those titles are outdated. Only field labels can tell.
+Differences between the optical variants are inside the fold spread; radar alone is clearly worse, radar added to
+optical gains about one point. The choice of features, learner and share bands follows these numbers: change them only
+with a new run of the experiments and the table above updated.

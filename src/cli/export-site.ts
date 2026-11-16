@@ -20,6 +20,7 @@ import { loadCombinedForBundle } from '../pruning/combined-bundle.ts';
 import { loadLicenceAuditForBundle } from '../audit/bundle.ts';
 import { loadDroneForBundle } from '../drone/bundle.ts';
 import { loadComplianceForBundle } from '../compliance/bundle.ts';
+import { loadCoverForBundle } from '../cover/bundle.ts';
 import { loadRemoteTerrain } from '../remote-evidence/terrain.ts';
 
 /**
@@ -209,6 +210,8 @@ function main(): void {
         droneVerification: drone?.block ?? null,
         // Optional: rule-based licence compliance report (audit + drone read rule by rule; separate module under licensing).
         compliance: loadComplianceForBundle(store.dir),
+        // Optional: land cover per parcel (tea or not, and what else grows there; separate module).
+        landCover: loadCoverForBundle(store.dir),
         remoteTerrain: loadRemoteTerrain(store.dir),
         licensing: {
             demo: true,
