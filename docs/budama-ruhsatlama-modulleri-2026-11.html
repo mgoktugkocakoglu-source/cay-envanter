@@ -1,0 +1,268 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<title>Budama ve Ruhsatlama Modülleri</title>
+<style>
+    @page { size: A4; margin: 18mm 16mm 18mm 16mm; }
+    :root { --ink: #0f172a; --muted: #475569; --line: #cbd5e1; --green: #15803d; --soft: #f1f5f9; --warn: #92400e; --warnbg: #fef3c7; }
+    * { box-sizing: border-box; }
+    body { font-family: "Segoe UI", Arial, sans-serif; color: var(--ink); font-size: 10.2pt; line-height: 1.5; margin: 0; }
+    h1 { font-size: 23pt; line-height: 1.15; margin: 0 0 6pt; letter-spacing: -0.01em; }
+    h2 { font-size: 15pt; margin: 22pt 0 6pt; padding-bottom: 4pt; border-bottom: 2px solid var(--green); break-after: avoid; }
+    h3 { font-size: 11.5pt; margin: 14pt 0 4pt; break-after: avoid; }
+    p { margin: 0 0 7pt; }
+    ul, ol { margin: 0 0 7pt; padding-left: 16pt; }
+    li { margin-bottom: 2.5pt; }
+    .cover { padding-top: 50mm; break-after: page; }
+    .cover .kicker { color: var(--green); font-weight: 600; font-size: 10.5pt; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 10pt; }
+    .cover .sub { font-size: 12.5pt; color: var(--muted); max-width: 135mm; margin-top: 10pt; }
+    .cover .meta { margin-top: 26mm; font-size: 9.5pt; color: var(--muted); border-top: 1px solid var(--line); padding-top: 8pt; }
+    table { width: 100%; border-collapse: collapse; margin: 5pt 0 10pt; font-size: 9.3pt; break-inside: avoid; }
+    th { text-align: left; background: var(--soft); font-weight: 600; padding: 4.5pt 6pt; border-bottom: 1.5px solid var(--line); vertical-align: bottom; }
+    td { padding: 4.5pt 6pt; border-bottom: 1px solid var(--line); vertical-align: top; }
+    td.n, th.n { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+    .note { background: var(--warnbg); border-left: 3px solid #d97706; padding: 7pt 9pt; margin: 8pt 0 10pt; font-size: 9.6pt; break-inside: avoid; }
+    .box { background: var(--soft); border-left: 3px solid var(--green); padding: 7pt 9pt; margin: 8pt 0 10pt; font-size: 9.6pt; break-inside: avoid; }
+    .flow { display: flex; gap: 4pt; align-items: stretch; margin: 8pt 0 10pt; break-inside: avoid; }
+    .flow div { flex: 1; border: 1px solid var(--line); border-radius: 4pt; padding: 6pt 7pt; font-size: 8.8pt; }
+    .flow div b { display: block; font-size: 9.4pt; margin-bottom: 2pt; }
+    .flow span { align-self: center; color: var(--muted); font-size: 12pt; }
+    .small { font-size: 8.8pt; color: var(--muted); }
+    .up { color: var(--green); font-weight: 600; }
+    .down { color: #b91c1c; font-weight: 600; }
+    code { font-family: Consolas, monospace; font-size: 9pt; background: var(--soft); padding: 0 2pt; }
+    .toc li { margin-bottom: 3pt; }
+</style>
+</head>
+<body>
+
+<section class="cover">
+    <div class="kicker">ÇAYKUR çay bahçesi platformu · Teknik not</div>
+    <h1>Budama ve Ruhsatlama Modülleri</h1>
+    <p class="sub">Ne yapıyoruz, hangi veriye dayanıyoruz, sonuçlar ne kadar güvenilir ve 15–16 Kasım 2026 değişiklikleri sistemi nasıl etkiledi.</p>
+    <div class="meta">
+        Pilot bölge: Trabzon / Of / Çataldere · 542 kadastro parseli · 344 bahçe birimi<br>
+        Belge tarihi: 16 Kasım 2026 · Sayılar yerel sistemin bu tarihteki çıktısıdır<br>
+        Ruhsat ve üretici kayıtları DEMO'dur. Bu belgedeki her sonuç ön değerlendirmedir; idari karar değildir.
+    </div>
+</section>
+
+<h2 style="margin-top:0">İçindekiler</h2>
+<ol class="toc">
+    <li>Özet</li>
+    <li>Sistemin yapısı ve veri kaynakları</li>
+    <li>Budama modülü</li>
+    <li>Ruhsatlama modülü</li>
+    <li>15–16 Kasım değişiklikleri (Codex) ve etkisi</li>
+    <li>Sınırlar ve sıradaki adımlar</li>
+</ol>
+
+<h2>1. Özet</h2>
+<p>Platform iki soruya uzaktan algılamayla yanıt arıyor. <b>Budama:</b> üretici, bahçelerinin kurumun istediği payını (sistemde 1/7) o sezon gerçekten budadı mı? <b>Ruhsatlama:</b> ruhsat kaydı, tapu niteliği ve arazideki çay birbirini tutuyor mu?</p>
+<p>İki modül de aynı ilkeyle çalışır: birbirinden bağımsız kaynaklar (kayıt, uydu, drone) parsel ya da bahçe bazında karşılaştırılır. Kaynaklar uyuşuyorsa sonuç verilir; uyuşmuyorsa ya da kanıt zayıfsa sistem “inceleme” ya da “karar verilemedi” der. Bir üretici aleyhine sonuç yalnız net kanıtla gösterilir.</p>
+<div class="box">
+    <b>Bugünkü durum, kısaca</b>
+    <ul>
+        <li>Budamada iki bağımsız yöntem çalışıyor (çok-sensör karar ve piksel taraması) ve ikisinin de yanlış alarm oranı ölçüldü: 344 bahçede sırasıyla en fazla 7 ve 10.</li>
+        <li>Asıl zayıflık kaçırma oranı: sentetik kesim denemelerinde piksel taraması kesimlerin %25'ini, belirgin olanların %50'sini yakalıyor. Küçük ve sığ kesimler 10 m uydu çözünürlüğünün altında kalıyor.</li>
+        <li>Ruhsatlamada 542 parselin 33'ünde iki görüntü kaynağı ve iki kayıt birbirini doğruluyor; 261 parselde net okuma yok.</li>
+        <li>Hiçbir sonuç sistematik saha verisiyle sınanmadı. Ölçülen oranlar sentetik ve ayna testlerinden geliyor.</li>
+    </ul>
+</div>
+
+<h2>2. Sistemin yapısı ve veri kaynakları</h2>
+<div class="flow">
+    <div><b>Analiz motoru</b>Parselleri toplar, uydu ve drone görüntüsünü okur, modül başına sonuç dosyası yazar.</div><span>→</span>
+    <div><b>Mahalle paketi</b>Her mahalle için tek JSON dosyası ve kanıt görüntüleri.</div><span>→</span>
+    <div><b>Site</b>Paketi veritabanına alır; kurum personeli sonuçları, kanıtı ve haritayı görür.</div>
+</div>
+<table>
+    <tr><th style="width:27%">Kaynak</th><th style="width:21%">Çözünürlük</th><th>Ne için kullanılıyor</th></tr>
+    <tr><td>TKGM kadastro</td><td>Parsel geometrisi</td><td>Parsel sınırı, ada/parsel, tapu niteliği, tapu alanı. Günlük sorgu kotası sınırlı; diskteki kütüphane kullanılır.</td></tr>
+    <tr><td>Sentinel-2 (optik)</td><td>10 m, 5 günde bir</td><td>Bitki indeksleri (NDVI, NBR, NDRE): çay tespiti, budama düşüşü, sağlık.</td></tr>
+    <tr><td>Sentinel-1 (radar)</td><td>10 m, bulut etkilemez</td><td>Geri saçılım ve uyum (coherence): budamada yardımcı tanık, çay tespitinde öznitelik.</td></tr>
+    <tr><td>Landsat arşivi</td><td>30 m, 1984'ten bugüne</td><td>Bahçe yaşı ve uzun dönem bitki örtüsü geçmişi.</td></tr>
+    <tr><td>Drone videosu</td><td>1280×720, konum verisi yok</td><td>Parselin o günkü görünümü, görsel kanıt kareleri.</td></tr>
+    <tr><td>Açık bina izleri</td><td>Metre düzeyinde kayık olabilir</td><td>Parselde yapı var mı; drone videosunu haritaya bağlamak için kontrol noktası.</td></tr>
+    <tr><td>Ruhsat ve üretici kaydı</td><td>—</td><td><b>DEMO.</b> Gerçek ÇAYKUR listesi gelene kadar üretilmiş kayıtlar kullanılıyor.</td></tr>
+</table>
+
+<h2>3. Budama modülü</h2>
+<h3>3.1 Soru ve kural</h3>
+<p>Kurum, üreticinin ruhsatlı çaylık alanının belirli bir payını her sezon derin budamasını ister. Sistem bu payı 1/7 olarak alır ve yedi sezonluk bir döngü varsayar: aynı yer yedi sezon içinde ikinci kez budanmış görünüyorsa yeni budama sayılmaz. Modül her bahçe için “bu sezon budandı mı, ne zaman, kaç metrekare” sorusunu yanıtlar ve üretici başına toplar.</p>
+
+<h3>3.2 Çok-sensör karar (füzyon)</h3>
+<p>Bahçe ortalaması üzerinden çalışan ana yöntem. Eylül–Temmuz arasındaki Sentinel-2 ve Landsat optik serilerini, Sentinel-1 geri saçılımını ve uyum verisini birlikte okur; seride ani bir basamak (budama) arar.</p>
+<p>Bir bahçenin “budandı” sayılması için dört fiziksel kontrolden geçmesi gerekir:</p>
+<ol>
+    <li><b>Yeterli düşüş:</b> ham NDVI'da en az 0,08 azalma.</li>
+    <li><b>Basamak, rampa değil:</b> yavaş yavaş azalma terk ya da hastalık işaretidir, budama değil.</li>
+    <li><b>Yaz toparlanma testi:</b> 20 Mayıs–15 Temmuz arasında bahçe hâlâ güz düzeyinin belirgin altındaysa derin budamadır; kış ortasında düşüp toparlanan seri “hafif kesim ya da kar” sayılır.</li>
+    <li><b>Mahalle kalibrasyonu:</b> bahçenin sinyali, aynı mahalledeki diğer bahçelerin o tarihteki dağılımından belirgin ayrılmalıdır (budandı ≥ 1,5 σ, muhtemel ≥ 0,5 σ).</li>
+</ol>
+<p>Kar ve gölgeli tarihler (bahçe ortancası NDVI &lt; 0,65) ile parselin dörtte birinden azını gören sahneler elenir.</p>
+<table>
+    <tr><th>Sezon</th><th class="n">Budandı</th><th class="n">Muhtemel</th><th class="n">Belirsiz</th><th class="n">Budanmadı</th></tr>
+    <tr><td>2023-24</td><td class="n">2</td><td class="n">52</td><td class="n">69</td><td class="n">221</td></tr>
+    <tr><td>2024-25</td><td class="n">3</td><td class="n">15</td><td class="n">139</td><td class="n">187</td></tr>
+    <tr><td>2025-26</td><td class="n">9</td><td class="n">6</td><td class="n">107</td><td class="n">222</td></tr>
+</table>
+<p class="small">Çataldere, 344 bahçe birimi. Alım kararları bu modülden çıkar: 2025-26'da 9 üretici için otomatik açılış, 13 beklemede, 1 uzman incelemesi, 102 hedef karşılanmadı, 4 ruhsatsız (hepsi DEMO üretici kaydı üzerinden).</p>
+
+<h3>3.3 Piksel taraması</h3>
+<p>Bahçe ortalaması küçük kesimleri seyreltir. Piksel taraması Sentinel-2'nin kendi 10 m ızgarasını bahçenin üzerine oturtur ve her pikseli ayrı izler.</p>
+<ul>
+    <li><b>Mevsimsel taban:</b> her pikselin kendi önceki iki sezonu, o pikselin “normal” mevsim eğrisi olarak kullanılır. Dik arazide gürültünün asıl kaynağı pikselin kendi mevsim deseni olduğu için bu adım gürültüyü yarıya indirdi.</li>
+    <li><b>Kümeleme:</b> çekirdek piksel z ≥ 2,5, büyüme pikseli z ≥ 2,0; komşu pikseller küme oluşturur ve kümenin birleşik z değeri en az 5 olmalıdır. Çay örtüsü dışındaki kenar pikselleri küme başlatamaz.</li>
+    <li><b>Mahalle kalibrasyonu:</b> aday tarihte bütün mahallede aynı yönde bir kayma varsa (örneğin bahar yeşillenmesi) sinyal ona göre düzeltilir. Bu adım olmadan 344 bahçenin 209'u işaretleniyordu.</li>
+    <li><b>Toparlanma sınıfı:</b> derin (yaz boyunca düşük kalıyor), hafif (hızla toparlanıyor), geçici.</li>
+</ul>
+<p>2025-26 sonucu: 22 derin, 17 hafif, 6 zayıf, 299 kesim yok.</p>
+
+<h3>3.4 Ölçülen doğruluk</h3>
+<p>Saha etiketi olmadığı için iki dolaylı test kullanılıyor. <b>Ayna testi:</b> seriler kendi ortancası etrafında çevrilir; bulunan her “kesim” yanlış alarmdır (üst sınır). <b>Sentetik kesim:</b> sessiz bahçelere yeri, tarihi ve derinliği bilinen kesimler eklenir; kaçının yakalandığı sayılır.</p>
+<table>
+    <tr><th>Ölçüm (2025-26)</th><th class="n">Çok-sensör</th><th class="n">Piksel taraması</th></tr>
+    <tr><td>Ayna testinde yanlış alarm (344 bahçede)</td><td class="n">7</td><td class="n">10</td></tr>
+    <tr><td>Aynı 237 sentetik kesimden yakalanan</td><td class="n">17–33</td><td class="n">94</td></tr>
+    <tr><td>Yalnız derin kesimler (103)</td><td class="n">17–33</td><td class="n">55</td></tr>
+    <tr><td>Hafif kesimler (134)</td><td class="n">0 (tasarım gereği saymaz)</td><td class="n">39</td></tr>
+</table>
+<p>Piksel taramasının kendi 240 denemelik testinde yakalama oranı genelde %25, belirgin kesimlerde (en az 3 piksel, en az 0,15 düşüş) %50, 3 piksel × 0,25 düşüşte %81. Pikseli 0,06–0,10 düşüren küçük, sığ kesimler güz dışında gürültünün altında kalıyor; 22 Aralık–15 Şubat bulut boşluğundaki hafif kesimler görünmüyor.</p>
+<div class="note"><b>Okuma:</b> sistem “budandı” dediğinde yanılma olasılığı düşük, ama “budanmadı” demesi budamanın olmadığını göstermez. Radar tek başına budanmış bahçeyi ayıramıyor; yalnız yardımcı tanık olarak kullanılıyor.</div>
+
+<h3>3.5 Birleşik karar</h3>
+<p>İki yöntemin çıktısını bahçe bazında yan yana koyan ayrı bir modül. Sınıflar: <b>uyumlu</b> (iki yöntem aynı olayı gördü), <b>muhtemel</b> (biri gördü ya da kanıt eksik), <b>hafif</b> (çabuk toparlanan kesim; hedefe sayılmaz), <b>mevsimsel</b> (aynı düşüş bir önceki sezon aynı tarihte de var; budama değil mevsim deseni). Alım kararları füzyon modülünde kalır; birleşik karar karşılaştırma ve inceleme içindir. Bu modülün kuralları 16 Kasım'da sıkılaştırıldı; ayrıntı 5. bölümde.</p>
+
+<h3>3.6 Saha testi</h3>
+<p>Denetçinin bildirdiği gerçek budamaları kör test olarak sınar: sisteme yalnız ada/parsel ve yaklaşık tarih verilir, budanan alanı sistem kendi çizer, sonuç ancak ondan sonra denetçinin işaretiyle karşılaştırılır. Şu an tek mahallede ve az sayıda kayıtla çalışıyor; yöntemlerin gerçek isabetini ölçmenin tek doğrudan yolu bu.</p>
+
+<h2>4. Ruhsatlama modülü</h2>
+<h3>4.1 Soru</h3>
+<p>Ruhsat, bir üreticinin belirli bir parselde belirli bir alanda çay yetiştirdiğini kayda bağlar; alım kotası bu alana dayanır. Modül parsel bazında şunlara bakar: ruhsatlı parselde çay var mı, ruhsatsız parselde çay yetiştiriliyor mu, ruhsat alanı çay alanıyla uyuşuyor mu, kamu arazisinde çay var mı, tapu niteliği arazideki durumla tutarlı mı.</p>
+
+<h3>4.2 Çay tespiti ve arazi tespit kararı</h3>
+<p>Uydu tabanlı çay dedektörü tapu niteliğinden bağımsız eğitilir (konum özniteliği yok, denetlenen nitelikler eğitimde yok), böylece tapudaki hatayı öğrenip tekrar etmez. Ayrılmış test piksellerinde doğruluk %85,2, çay yakalama %89,8, çay kesinliği %80,5 (kappa 0,70).</p>
+<p>Karar üç bağımsız kaynaktan çıkar: <b>T</b> tapu niteliği çay diyor mu, <b>L</b> ruhsat kaydı var mı, <b>D</b> arazide çay tespit edildi mi. Sekiz birleşimin her biri adlandırılmıştır.</p>
+<table>
+    <tr><th>Karar</th><th>Birleşim</th><th class="n">Parsel</th></tr>
+    <tr><td>Çay arazisi</td><td>Tapu, ruhsat ve arazi uyumlu</td><td class="n">396</td></tr>
+    <tr><td>Tapu güncel değil</td><td>Ruhsatlı çay var, tapuda başka nitelik</td><td class="n">70</td></tr>
+    <tr><td>Kapsam dışı</td><td>Çayla ilgisi yok</td><td class="n">42</td></tr>
+    <tr><td>İnceleme gerekli</td><td>Tespit kararsız ya da kanıt zayıf</td><td class="n">21</td></tr>
+    <tr><td>Ruhsatsız çay</td><td>Arazide çay, ruhsat yok (tapulu + tapusuz)</td><td class="n">6</td></tr>
+    <tr><td>Yalnız tapuda çay</td><td>Ruhsat ve arazide çay yok</td><td class="n">3</td></tr>
+    <tr><td>Ruhsatlandırma hatası</td><td>Ruhsat var, tapu ve arazi çay göstermiyor</td><td class="n">2</td></tr>
+    <tr><td>Çaysız ruhsat</td><td>Tapu ve ruhsat çay diyor, arazide yok</td><td class="n">2</td></tr>
+</table>
+<p>Kural bilerek asimetriktir: aleyhe bir sonuç (ruhsatsız çay, çaysız ruhsat, ruhsat hatası) en az orta güven ister; aksi halde parsel incelemeye gider. 300 m² altındaki parseller 10 m ızgarada üç pikselden küçük olduğu için değerlendirilemez. Güven dağılımı: 150 yüksek, 108 orta, 284 düşük.</p>
+
+<h3>4.3 Drone doğrulama</h3>
+<p>Konum verisi olmayan sıradan bir drone videosundan parsel bazında görsel kanıt üretir.</p>
+<ol>
+    <li>Videonun karelerinden kamera konumları çözülür (317 kare, 378 bin 3B nokta).</li>
+    <li>Karelerde işaretlenen çatılar haritadaki bina izleriyle eşleştirilir; model haritaya bağlanır. 41 kontrol binasında ortalama hata 4,3 m; kontrol binaları arasına yerel düzeltme eklenince dışarıda bırakılan bir binada beklenen hata 3,7 m.</li>
+    <li>TKGM parsel sınırları her kareye bindirilir; videonun gerçekten gördüğü parseller seçilir ve kanıt kareleri kesilir.</li>
+    <li>Kareler okunarak parsele sınıf verilir: çay mevcut, çay bulunamadı, kısmen çay, belirsiz.</li>
+</ol>
+<p>Sonuç (323 parsel): 80 çay mevcut, 60 bulunamadı, 29 kısmen, 154 belirsiz. Belirsizlerin çoğu 400 m² altındaki parsellerdir: birkaç metrelik bindirme hatası sonucu değiştirebildiği için sınıf verilmez.</p>
+<div class="note"><b>Sınırlar:</b> sınıflar görüntü okumasıdır ve bir uzman ya da saha ziyaretiyle doğrulanmamıştır. Otomatik piksel sınıflandırıcı deneyseldir (doğruluk %74, çay yakalama %56) ve haritayı renklendirmez. Bindirme metre düzeyinde kayık olduğu için sınır tespiti ve alan ölçümü yapılamaz. Videodan üretilen ortofoto kaymalar nedeniyle yayından kaldırılmıştır.</div>
+
+<h3>4.4 Kural tabanlı uygunluk raporu</h3>
+<p>Her parsel yazılı on kurala karşı ayrı ayrı sınanır ve her kuralın sonucu dayandığı kanıt cümlesiyle verilir. Kural yalnız bulgu taşıyabilecek kanıtla “aykırı” olur: çelişen iki kayıt, net uydu okuması ya da doğrulanmış gözlem.</p>
+<table>
+    <tr><th style="width:52%">Kural</th><th class="n">Uygun</th><th class="n">Aykırı</th><th class="n">İnceleme</th><th class="n">Kanıt yok</th></tr>
+    <tr><td>K1 Ruhsatlı parselin tapu niteliği çay içerir</td><td class="n">404</td><td class="n">78</td><td class="n">0</td><td class="n">0</td></tr>
+    <tr><td>K2 Ruhsatlı parselde çay vardır (uydu)</td><td class="n">301</td><td class="n">4</td><td class="n">14</td><td class="n">163</td></tr>
+    <tr><td>K3 Ruhsatlı parselde çay vardır (drone)</td><td class="n">81</td><td class="n">0</td><td class="n">81</td><td class="n">320</td></tr>
+    <tr><td>K4 Ruhsatsız parselde çay yetiştirilmez</td><td class="n">14</td><td class="n">0</td><td class="n">7</td><td class="n">36</td></tr>
+    <tr><td>K6 Ruhsat alanı çay alanıyla uyumludur</td><td class="n">141</td><td class="n">0</td><td class="n">36</td><td class="n">117</td></tr>
+    <tr><td>K7 Parseldeki yapı tapu niteliğinde yer alır</td><td class="n">55</td><td class="n">0</td><td class="n">26</td><td class="n">0</td></tr>
+    <tr><td>K8 Uydu ve drone okumaları aynı yöndedir</td><td class="n">70</td><td class="n">0</td><td class="n">69</td><td class="n">184</td></tr>
+    <tr><td>K10 Saha gözlemi kayıtla uyumludur</td><td class="n">8</td><td class="n">4</td><td class="n">0</td><td class="n">0</td></tr>
+</table>
+<p class="small">Kural başına sayılar 15 Kasım'daki ilk çalıştırmadandır; drone konum düzeltmesinden sonra parsel toplamları birkaç parsel oynadı. K5 (kamu arazisinde çay) ve K9 (tapu alanı–geometri) bu mahallede açık kalmadı. Parsel bazında güncel toplam: 195 uygun, 84 aykırılık bulgusu, 99 inceleme, 119 kanıt yetersiz, 45 kapsam dışı.</p>
+<div class="note">Kural seti taslaktır: metinler denetim mantığını yazar; dayandıkları mevzuat maddeleri ÇAYKUR ile eşleştirilmemiştir. K1'deki 78 aykırılık DEMO ruhsat kaydından gelir; gerçek durumu göstermez.</div>
+
+<h3>4.5 Kesinlik sınıfı ve ruhsat haritası</h3>
+<p>Uygunluk raporunun üzerine eklenen katman, her parsel için “sistem bu parselde karar verebildi mi” sorusunu yanıtlar.</p>
+<table>
+    <tr><th style="width:24%">Sınıf</th><th>Koşul</th><th class="n">Parsel</th><th class="n">Alan</th></tr>
+    <tr><td>Kaynaklar uyumlu</td><td>Net uydu ve net drone okuması aynı yönde, tapu ve ruhsat bununla tutarlı, açık kural yok</td><td class="n">33</td><td class="n">2,9 ha</td></tr>
+    <tr><td>Tek kaynak</td><td>Yalnız bir görüntü kaynağı net; kayıtlarla çelişki yok</td><td class="n">93</td><td class="n">13,7 ha</td></tr>
+    <tr><td>Çelişki</td><td>Kayıtlar, görüntüler ya da saha gözlemi birbirini tutmuyor</td><td class="n">155</td><td class="n">329,6 ha</td></tr>
+    <tr><td>Karar verilemedi</td><td>Net görüntü okuması yok ya da açık kural kapanmadı</td><td class="n">261</td><td class="n">13,7 ha</td></tr>
+</table>
+<p>“Net uydu okuması” için parselin en az 6 tam piksel olması, çay payı ve model olasılığının en az 0,6 (varlık) ya da çay payının 0,05'in altında (yokluk) olması gerekir. Düşük güvenli, kısmi ya da belirsiz drone okumaları net sayılmaz.</p>
+<p>Haritada parseller bu sınıfa göre renklendirilir; GeoJSON ve KML olarak indirilebilir. Dışa aktarılan dosyada DEMO ve ön değerlendirme notu yer alır.</p>
+<div class="note">“Çelişki” sınıfındaki 155 parselin büyük bölümü DEMO ruhsat kaydının tapu niteliğiyle tutmamasından kaynaklanır; alanın büyüklüğü birkaç geniş orman ve hazine parselinden gelir. “Kaynaklar uyumlu” doğrulanmış gerçek demek değildir; iki bağımsız görüntünün ve iki kaydın aynı şeyi söylediğini gösterir.</div>
+
+<h3>4.6 Yardımcı ekranlar</h3>
+<ul>
+    <li><b>Uzaktan kanıt zaman çizelgesi:</b> diskteki 45 Sentinel-2 sahnesi ve parselin 2017'den bugüne aylık bitki indeksi; yeni görüntü indirilmez.</li>
+    <li><b>NDVI taraması:</b> parselin o yılki aylık değerini kendi önceki beş yılının aynı ay ortancasıyla karşılaştırır; iki ardışık ayda 0,15'ten fazla düşüş “gerileme” olarak işaretlenir. Kalibre edilmemiş bir taramadır; çayı ya da ihlali kanıtlamaz.</li>
+    <li><b>Göreli 3B görünüm:</b> videodan çıkan zemin modeli üzerinde parseller kesinlik rengiyle; ortofoto giydirilmez.</li>
+    <li><b>Üretici dosyası ve parsel drone kanıtı:</b> bir üreticinin parsellerini ve özgün video karelerini tek yerde toplar.</li>
+    <li><b>Ruhsat işlemleri:</b> bahçe alt bölünmesi, ruhsat ayırma, devir, alan düzeltme ve sınır tespiti başvuruları (DEMO onay akışı).</li>
+</ul>
+
+<h2>5. 15–16 Kasım değişiklikleri (Codex) ve etkisi</h2>
+<p>İki depoda toplam 12 değişiklik kaydedildi. Derleme ve tip denetimleri temiz geçiyor; kural sınama betiği 16 denetimin tümünü geçiyor.</p>
+<h3>5.1 Ne yapıldı</h3>
+<table>
+    <tr><th style="width:30%">Değişiklik</th><th>İçerik</th><th style="width:22%">Tür</th></tr>
+    <tr><td>Kesinlik sınıfı</td><td>Uygunluk raporuna dört sınıflı kesinlik alanı; mevcut kural sonuçları değişmedi.</td><td>Yeni sınıflandırma</td></tr>
+    <tr><td>Ruhsat haritası ve dışa aktarım</td><td>Kesinlik renkli harita, GeoJSON/KML indirme, parsel ayrıntı ucu.</td><td>Sunum</td></tr>
+    <tr><td>Uzaktan kanıt envanteri ve zaman çizelgesi</td><td>Diskteki sahnelerin ve aylık serilerin dökümü; parsel bitki örtüsü geçmişi.</td><td>Sunum</td></tr>
+    <tr><td>Göreli 3B görünüm</td><td>Zemin modeli ortofotodan ayrı dışa aktarılıyor; nötr yüzey üzerinde parseller.</td><td>Sunum</td></tr>
+    <tr><td>NDVI taraması</td><td>Parsel bazında yıllık gerileme/toparlanma taraması.</td><td>Yeni tarama (kalibre değil)</td></tr>
+    <tr><td>Arazi bulguları ve üretici dosyası</td><td>Ekran metinleri “ön değerlendirme” diline çekildi; üretici kanıt dosyası eklendi.</td><td>Sunum</td></tr>
+    <tr><td>Birleşik budama kararı v2</td><td>“Uyumlu” için gözlem aralıklarının örtüşmesi, iki yöntemin de derin kesim demesi ve önceki sezon testinin olumsuz olması şartı; hafif ve bekleyen kesimler hedefe sayılmıyor.</td><td>Kural değişikliği</td></tr>
+    <tr><td>Birleşik budama kararı v3</td><td>Önceki yedi sezonda aynı bahçede sayılmış piksel hücreleri yeni budamadan düşülüyor.</td><td>Kural değişikliği</td></tr>
+    <tr><td>Hedef senaryoları</td><td>Üretici tablosunda “desteklenen alan” (alt sınır) ve “olası alan” ayrı sütunlar; alanı bilinmeyen bahçe tüm bahçe sayılmıyor.</td><td>Sunum + hesap</td></tr>
+</table>
+
+<h3>5.2 Sonuçlara etkisi</h3>
+<p><b>Ruhsatlama:</b> mevcut kararların hiçbiri değişmedi. Kesinlik sınıfı yeni bir bilgi ekledi: 542 parselin yalnız 33'ünde (%6) bütün kaynaklar uyuşuyor.</p>
+<p><b>Budama (birleşik karar):</b> sonuçlar belirgin biçimde değişti.</p>
+<table>
+    <tr><th>Sezon</th><th class="n">Uyumlu<br>önce → sonra</th><th class="n">Muhtemel<br>önce → sonra</th><th class="n">Sayılan alan (m²)<br>önce → sonra</th><th class="n">Hedefi karşılayan üretici<br>önce → sonra</th></tr>
+    <tr><td>2023-24</td><td class="n">4 → <span class="down">0</span></td><td class="n">43 → 46</td><td class="n">10 290 → 9 349</td><td class="n">1 → <span class="down">0</span></td></tr>
+    <tr><td>2024-25</td><td class="n">6 → <span class="down">1</span></td><td class="n">20 → 25</td><td class="n">7 522 → 6 476</td><td class="n">4 → <span class="down">1</span></td></tr>
+    <tr><td>2025-26</td><td class="n">10 → <span class="down">1</span></td><td class="n">18 → 27</td><td class="n">6 287 → 4 516</td><td class="n">4 → <span class="down">0</span></td></tr>
+    <tr><td>2026-27 (süren)</td><td class="n">0 → 0</td><td class="n">10 → 10</td><td class="n">1 891 → <span class="down">0</span></td><td class="n">0 → 0</td></tr>
+</table>
+<p class="small">“Hedefi karşılayan” yalnız uyumlu alanla 1/7'yi tutturan üreticilerdir; “muhtemel dahil karşılayan” sayıları 14→15, 5→8, 5→6 oldu. Füzyon modülünün alım kararları (2025-26'da 9 otomatik açılış) değişmedi.</p>
+
+<h3>5.3 Doğruluk değerlendirmesi</h3>
+<ul>
+    <li><b>Hiçbir değişiklik tespit doğruluğunu ölçülebilir biçimde artırmadı.</b> Yeni veri, yeni model ya da yeni saha etiketi eklenmedi. Değişiklikler sistemin ne zaman “eminim” dediğini sıkılaştırdı ve sunumu genişletti.</li>
+    <li><b>Yanlış onay riski azaldı.</b> “Uyumlu” sınıfı artık çok daha zor veriliyor; iki yöntemin birbirine yakın tarihli ama farklı olayları tek olay sayması engellendi; aynı yerin iki kez sayılması önlendi. Bunlar mantıken doğru yönde adımlar.</li>
+    <li><b>Bedeli: “uyumlu” sınıfı neredeyse boşaldı.</b> 2025-26'da 10 bahçeden 1'e indi. Önceki kuralla bu sınıfın ayna testinde yanlış alarmı zaten 0'dı; yani sıkılaştırma, ölçülmüş bir hatayı düzeltmedi, gerçek budamaları da “muhtemel”e indirdi.</li>
+    <li><b>Birleşik kararın ölçülmüş doğruluğu şu an yok.</b> Kurallar değiştiği için eski ayna/sentetik test sonuçları ve yıllar arası geriye dönük kontrol yayından kaldırıldı (doğru karar), ama yeni kurallarla yeniden çalıştırılmadı. Eklenen 16 kural denetimi mantık hatasını yakalar, doğruluk ölçmez.</li>
+    <li><b>Kesinlik sınıfındaki “çelişki” sayısı DEMO kayıttan şişiyor.</b> Tapu niteliği ile DEMO ruhsat kaydı tutmadığında parsel doğrudan “çelişki” oluyor; gerçek liste gelince bu sayı anlamlı hale gelir.</li>
+    <li><b>NDVI taraması kalibre edilmedi.</b> Eşikleri (0,15 düşüş, iki ardışık ay) makul ama sınanmamış; ekranda böyle etiketli.</li>
+</ul>
+<div class="box"><b>Genel hüküm:</b> sistem daha temkinli ve daha iyi belgelenmiş hale geldi; kurum karşısında savunması daha kolay. Buna karşılık birleşik budama kararı şu an neredeyse hiçbir bahçeyi “uyumlu” saymıyor ve doğruluğu ölçülmemiş durumda. Bu modül yeniden sınanmadan sunumda “kesin” bir sonuç olarak kullanılmamalı.</div>
+
+<h2>6. Sınırlar ve sıradaki adımlar</h2>
+<h3>Sistemin yapamadıkları</h3>
+<ul>
+    <li>%100 doğruluk veremez. 10 m uydu çözünürlüğü küçük parselleri ve küçük kesimleri göremez; drone videosu metre düzeyinde kayıktır.</li>
+    <li>Alan ölçemez; verdiği metrekareler piksel sayımından gelen tahminlerdir.</li>
+    <li>Ruhsata dayanan hiçbir sonuç gerçek değildir: kayıtlar DEMO.</li>
+    <li>İnsan doğrulaması yok denecek kadar az: 542 parselde 14 saha gözlemi; drone okumalarının hiçbiri doğrulanmamış.</li>
+</ul>
+<h3>Önerilen adımlar</h3>
+<ol>
+    <li><b>Birleşik budama kararını yeni kurallarla yeniden sınamak</b> (ayna ve sentetik kesim testleri). Yazılım işi; mevcut önbelleklerle yapılabilir. “Uyumlu” şartlarının gereğinden sıkı olup olmadığını bu test gösterir.</li>
+    <li><b>Gerçek ÇAYKUR ruhsat ve üretici listesi.</b> Ruhsatlama modülünün bütün sayılarını gerçek hale getirir.</li>
+    <li><b>Planlı drone çekimi:</b> dik bakış, ızgara uçuş, yüksek bindirme, uçuş kaydı, mümkünse RTK. Santimetre düzeyinde ortofoto verir; çaylık alan ölçülebilir, “karar verilemedi” oranı düşer.</li>
+    <li><b>Çok yıllı uydu tutarlılığını</b> (parselde her yıl çay görülüyor mu) üçüncü bağımsız kaynak olarak kesinlik sınıfına eklemek.</li>
+    <li><b>Kural setinin mevzuat maddeleriyle eşleştirilmesi.</b></li>
+</ol>
+<p class="small" style="margin-top:14pt">Sayıların kaynağı: Çataldere mahalle paketi (16 Kasım 2026), motor deposundaki modül çıktıları ve iki deponun değişiklik geçmişi. Ayna ve sentetik test sonuçları 12 Kasım 2026 çalıştırmalarındandır.</p>
+
+</body>
+</html>
