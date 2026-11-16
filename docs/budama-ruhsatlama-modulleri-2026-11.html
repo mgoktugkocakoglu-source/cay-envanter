@@ -66,7 +66,7 @@
     <ul>
         <li>Budamada iki bağımsız yöntem çalışıyor (çok-sensör karar ve piksel taraması) ve ikisinin de yanlış alarm oranı ölçüldü: 344 bahçede sırasıyla en fazla 7 ve 10.</li>
         <li>Asıl zayıflık kaçırma oranı: sentetik kesim denemelerinde piksel taraması kesimlerin %25'ini, belirgin olanların %50'sini yakalıyor. Küçük ve sığ kesimler 10 m uydu çözünürlüğünün altında kalıyor.</li>
-        <li>Ruhsatlamada 542 parselin 33'ünde iki görüntü kaynağı ve iki kayıt birbirini doğruluyor; 261 parselde net okuma yok.</li>
+        <li>Ruhsatlamada 542 parselin 64'ünde en az iki bağımsız kaynak birbirini ve tapu niteliğini doğruluyor; 257 parselde net okuma yok.</li>
         <li>Hiçbir sonuç sistematik saha verisiyle sınanmadı. Ölçülen oranlar sentetik ve ayna testlerinden geliyor.</li>
     </ul>
 </div>
@@ -133,7 +133,7 @@
 <div class="note"><b>Okuma:</b> sistem “budandı” dediğinde yanılma olasılığı düşük, ama “budanmadı” demesi budamanın olmadığını göstermez. Radar tek başına budanmış bahçeyi ayıramıyor; yalnız yardımcı tanık olarak kullanılıyor.</div>
 
 <h3>3.5 Birleşik karar</h3>
-<p>İki yöntemin çıktısını bahçe bazında yan yana koyan ayrı bir modül. Sınıflar: <b>uyumlu</b> (iki yöntem aynı olayı gördü), <b>muhtemel</b> (biri gördü ya da kanıt eksik), <b>hafif</b> (çabuk toparlanan kesim; hedefe sayılmaz), <b>mevsimsel</b> (aynı düşüş bir önceki sezon aynı tarihte de var; budama değil mevsim deseni). Alım kararları füzyon modülünde kalır; birleşik karar karşılaştırma ve inceleme içindir. Bu modülün kuralları 16 Kasım'da sıkılaştırıldı; ayrıntı 5. bölümde.</p>
+<p>İki yöntemin çıktısını bahçe bazında yan yana koyan ayrı bir modül. Sınıflar: <b>uyumlu</b> (iki yöntem aynı olayı gördü), <b>muhtemel</b> (biri gördü ya da kanıt eksik), <b>hafif</b> (çabuk toparlanan kesim; hedefe sayılmaz), <b>mevsimsel</b> (aynı düşüş bir önceki sezon aynı tarihte de var; budama değil mevsim deseni). Alım kararları füzyon modülünde kalır; birleşik karar karşılaştırma ve inceleme içindir. Bu modülün kuralları 16 Kasım'da sıkılaştırıldı, ölçüm sonucunda aynı gün geri alındı; ayrıntı 5. bölümde.</p>
 
 <h3>3.6 Saha testi</h3>
 <p>Denetçinin bildirdiği gerçek budamaları kör test olarak sınar: sisteme yalnız ada/parsel ve yaklaşık tarih verilir, budanan alanı sistem kendi çizer, sonuç ancak ondan sonra denetçinin işaretiyle karşılaştırılır. Şu an tek mahallede ve az sayıda kayıtla çalışıyor; yöntemlerin gerçek isabetini ölçmenin tek doğrudan yolu bu.</p>
@@ -189,19 +189,19 @@
 <p>Uygunluk raporunun üzerine eklenen katman, her parsel için “sistem bu parselde karar verebildi mi” sorusunu yanıtlar.</p>
 <table>
     <tr><th style="width:24%">Sınıf</th><th>Koşul</th><th class="n">Parsel</th><th class="n">Alan</th></tr>
-    <tr><td>Kaynaklar uyumlu</td><td>Net uydu ve net drone okuması aynı yönde, tapu ve ruhsat bununla tutarlı, açık kural yok</td><td class="n">33</td><td class="n">2,9 ha</td></tr>
-    <tr><td>Tek kaynak</td><td>Yalnız bir görüntü kaynağı net; kayıtlarla çelişki yok</td><td class="n">93</td><td class="n">13,7 ha</td></tr>
-    <tr><td>Çelişki</td><td>Kayıtlar, görüntüler ya da saha gözlemi birbirini tutmuyor</td><td class="n">155</td><td class="n">329,6 ha</td></tr>
-    <tr><td>Karar verilemedi</td><td>Net görüntü okuması yok ya da açık kural kapanmadı</td><td class="n">261</td><td class="n">13,7 ha</td></tr>
+    <tr><td>Kaynaklar uyumlu</td><td>En az iki bağımsız kaynak (uydu, drone, saha gözlemi) aynı yönde ve tapu niteliğiyle tutarlı</td><td class="n">64</td><td class="n">6,5 ha</td></tr>
+    <tr><td>Tek kaynak</td><td>Yalnız bir kaynak net; tapu niteliğiyle çelişmiyor</td><td class="n">181</td><td class="n">19,9 ha</td></tr>
+    <tr><td>Çelişki</td><td>Kaynaklar birbiriyle ya da tapu niteliğiyle çelişiyor; kamu arazisinde çay</td><td class="n">40</td><td class="n">51,1 ha</td></tr>
+    <tr><td>Karar verilemedi</td><td>Net okuma veren kaynak yok</td><td class="n">257</td><td class="n">282,3 ha</td></tr>
 </table>
-<p>“Net uydu okuması” için parselin en az 6 tam piksel olması, çay payı ve model olasılığının en az 0,6 (varlık) ya da çay payının 0,05'in altında (yokluk) olması gerekir. Düşük güvenli, kısmi ya da belirsiz drone okumaları net sayılmaz.</p>
+<p>“Net uydu okuması” için parselin en az 3 tam piksel olması, çay payı ve model olasılığının en az 0,6 (varlık) ya da çay payının 0,05'in altında (yokluk) olması gerekir. Düşük güvenli, kısmi ya da belirsiz drone okumaları net sayılmaz.</p>
 <p>Haritada parseller bu sınıfa göre renklendirilir; GeoJSON ve KML olarak indirilebilir. Dışa aktarılan dosyada DEMO ve ön değerlendirme notu yer alır.</p>
-<div class="note">“Çelişki” sınıfındaki 155 parselin büyük bölümü DEMO ruhsat kaydının tapu niteliğiyle tutmamasından kaynaklanır; alanın büyüklüğü birkaç geniş orman ve hazine parselinden gelir. “Kaynaklar uyumlu” doğrulanmış gerçek demek değildir; iki bağımsız görüntünün ve iki kaydın aynı şeyi söylediğini gösterir.</div>
+<div class="note">DEMO ruhsat kaydı bu sınıflandırmaya girmez: üretilmiş bir kayıt hiçbir şeyle çelişemez. Gerçek liste geldiğinde ruhsat kaydı da karşılaştırmaya katılır. “Kaynaklar uyumlu” doğrulanmış gerçek demek değildir; bağımsız kaynakların aynı şeyi söylediğini gösterir. “Çelişki” ve “karar verilemedi” alanlarının büyüklüğü birkaç geniş orman ve hazine parselinden gelir.</div>
 
 <h3>4.6 Yardımcı ekranlar</h3>
 <ul>
     <li><b>Uzaktan kanıt zaman çizelgesi:</b> diskteki 45 Sentinel-2 sahnesi ve parselin 2017'den bugüne aylık bitki indeksi; yeni görüntü indirilmez.</li>
-    <li><b>NDVI taraması:</b> parselin o yılki aylık değerini kendi önceki beş yılının aynı ay ortancasıyla karşılaştırır; iki ardışık ayda 0,15'ten fazla düşüş “gerileme” olarak işaretlenir. Kalibre edilmemiş bir taramadır; çayı ya da ihlali kanıtlamaz.</li>
+    <li><b>NDVI taraması:</b> parselin o yılki aylık değerini kendi önceki beş yılının aynı ay ortancasıyla karşılaştırır; iki ardışık ayda 0,12'den fazla düşüş “gerileme” olarak işaretlenir. Eşik sınandı (5.4); çayı ya da ihlali kanıtlamaz.</li>
     <li><b>Göreli 3B görünüm:</b> videodan çıkan zemin modeli üzerinde parseller kesinlik rengiyle; ortofoto giydirilmez.</li>
     <li><b>Üretici dosyası ve parsel drone kanıtı:</b> bir üreticinin parsellerini ve özgün video karelerini tek yerde toplar.</li>
     <li><b>Ruhsat işlemleri:</b> bahçe alt bölünmesi, ruhsat ayırma, devir, alan düzeltme ve sınır tespiti başvuruları (DEMO onay akışı).</li>
@@ -244,7 +244,17 @@
     <li><b>Kesinlik sınıfındaki “çelişki” sayısı DEMO kayıttan şişiyor.</b> Tapu niteliği ile DEMO ruhsat kaydı tutmadığında parsel doğrudan “çelişki” oluyor; gerçek liste gelince bu sayı anlamlı hale gelir.</li>
     <li><b>NDVI taraması kalibre edilmedi.</b> Eşikleri (0,15 düşüş, iki ardışık ay) makul ama sınanmamış; ekranda böyle etiketli.</li>
 </ul>
-<div class="box"><b>Genel hüküm:</b> sistem daha temkinli ve daha iyi belgelenmiş hale geldi; kurum karşısında savunması daha kolay. Buna karşılık birleşik budama kararı şu an neredeyse hiçbir bahçeyi “uyumlu” saymıyor ve doğruluğu ölçülmemiş durumda. Bu modül yeniden sınanmadan sunumda “kesin” bir sonuç olarak kullanılmamalı.</div>
+<div class="box"><b>Genel hüküm:</b> sunum ve belgeleme tarafındaki eklemeler değerliydi. Kural sıkılaştırmaları ise ölçülmeden yapılmıştı; ölçüldüğünde yanlış alarmı azaltmadıkları, yalnız gerçek uyumu sildikleri görüldü ve 5.4'teki düzeltmeler yapıldı. 5.2 ve 5.3 düzeltmeden önceki durumu anlatır.</div>
+
+<h3>5.4 16 Kasım düzeltmeleri (güncel durum)</h3>
+<p>Üç kural ölçülerek yeniden düzenlendi.</p>
+<table>
+    <tr><th style="width:24%">Konu</th><th>Ne yapıldı</th><th style="width:31%">Sonuç</th></tr>
+    <tr><td>Birleşik budama kararı</td><td>Aday kurallar gerçek ve ters çevrilmiş (ayna) serilerde karşılaştırıldı. Sıkı kuralların hiçbiri yanlış alarmı azaltmadı; ölçülmüş kural geri getirildi. Aynı zeminin iki kez sayılmasını önleyen kısım korundu. Doğruluk testleri ve geriye dönük sınama yeni kuralla yeniden üretildi.</td><td>Uyumlu bahçe: 4 / 6 / 10 (2023-24 / 2024-25 / 2025-26). Aynada yanlış uyum: 3 / 1 / 0. Hedefe ulaşan üretici (muhtemel dahil): 15 / 9 / 8.</td></tr>
+    <tr><td>Kesinlik sınıfı</td><td>DEMO ruhsat kaydı karşılaştırmadan çıkarıldı. Zayıf notlar (10 m pikselden alan farkı, açık bina izi, tapu alanı farkı) çelişki sayılmıyor. Saha gözlemi üçüncü kaynak oldu. Uydu için alt sınır 6 pikselden 3'e indi; uyum her durumda ikinci bir kaynak istediği için.</td><td>Uyumlu 33 → <span class="up">64</span>, çelişki 155 → <span class="up">40</span>, tek kaynak 93 → 181, karar verilemedi 261 → 257.</td></tr>
+    <tr><td>NDVI taraması</td><td>Eşik 824 parsel-yılda sınandı: ters çevrilmiş serilerde yanlış “gerileme” ve eklenen kalıcı düşüşlerin yakalanma oranı.</td><td>Eşik 0,15 → 0,12. Yanlış gerileme iki eşikte de 0; kalıcı 0,15 düşüşün yakalanması %32 → %70, 0,20 düşüşün %87 → %97.</td></tr>
+</table>
+<p class="small">2023-24 sezonu zayıftır: az Sentinel-2 tarihi olduğu için aynada 3 yanlış uyum çıkıyor; o sezonun “uyumlu” sonuçları temkinle okunmalıdır. NDVI testinde eşik 0,12'de ters çevrilmiş serilerdeki “inceleme” sayısı 4'ten 32'ye çıkıyor (parsel-yılların %3,9'u). Bu ölçümlerin hiçbiri saha verisine dayanmaz.</p>
 
 <h2>6. Sınırlar ve sıradaki adımlar</h2>
 <h3>Sistemin yapamadıkları</h3>
