@@ -28,16 +28,23 @@ export type CheckStatus = 'pass' | 'fail' | 'review' | 'unknown' | 'na';
 export type ComplianceOverall = 'conforming' | 'finding' | 'review' | 'no_evidence' | 'out_of_scope';
 export type ComplianceCertainty = 'agreed' | 'single_source' | 'conflict' | 'undecidable';
 
-/** Conservative evidence thresholds, not accuracy estimates or administrative decision criteria. */
+/**
+ * When does a parcel count as decided. Evidence thresholds, not accuracy estimates and not administrative criteria.
+ * The class answers one question: do the independent sources at hand say the same thing about tea on this parcel.
+ */
 export const CERTAINTY_RULES = {
-    /** Six whole 10 m pixels: below this, parcel edges dominate the reading (audit's fewPixels threshold). */
-    satelliteMinPixels: 6,
+    /**
+     * Whole 10 m pixels a satellite reading needs. Three is the audit's own floor (below it the grid cannot resolve the
+     * parcel). The audit's caution threshold of six is not used here: agreement always needs a second source, and
+     * asking for six alone left most parcels of this region (median 426 m²) without a reading.
+     */
+    satelliteMinPixels: 3,
     /** A majority tea cover and a clear model probability are both needed, as in the audit's strong reading. */
     satellitePresentShare: 0.6,
     satelliteMinProbability: 0.6,
     /** Absence needs almost no detected tea; intermediate readings cannot exclude sparse tea. */
     satelliteAbsentShare: 0.05,
-    /** Satellite and drone are two modalities; extra frames, detectors and field notes are not extra imagery sources. */
+    /** Sources are satellite, drone and field observation; any two that agree decide the parcel. */
     independentSourcesForAgreement: 2,
 };
 export type RuleSource = 'record' | 'satellite' | 'drone' | 'field' | 'buildings';
@@ -218,26 +225,43 @@ function clearDrone(d: DroneVerificationParcel | null): boolean | null {
     return d.class === 'tea_present' ? true : d.class === 'tea_not_found' ? false : null;
 }
 
-export function classifyCertainty(p: AuditParcel, d: DroneVerificationParcel | null, checks: ComplianceCheck[]): Pick<ComplianceParcel, 'certainty' | 'certaintyReason'> {
-    const satellite = clearSatellite(p);
-    const drone = clearDrone(d);
-    const readings = [satellite, drone].filter((value): value is boolean => value !== null);
-    const field = p.confirmation?.tea;
-    // A missing register entry is compared as recorded, never as proof of an offence (especially for DEMO).
-    const recordConflict = p.title.tea !== p.licence.licensed;
-    const imageryConflict = readings.some((value) => value !== p.title.tea || value !== p.licence.licensed);
-    const fieldConflict = field != null && (field !== p.title.tea || field !== p.licence.licensed || readings.some((value) => value !== field));
-    // These open rules explicitly describe incompatible areas, public use or building records.
-    const recordRules = checks.filter((c) => ['K5', 'K6', 'K7', 'K9'].includes(c.rule) && (c.status === 'fail' || c.status === 'review'));
-    if (recordConflict || imageryConflict || fieldConflict || recordRules.length) {
-        return { certainty: 'conflict', certaintyReason: `Kaynaklar veya kayıtlar çelişiyor${recordRules.length ? ` (${recordRules.map((c) => c.rule).join(', ')})` : ''}; karar verilemedi, saha/kayıt kontrolü gerekli.` };
+/**
+ * Agreement class of a parcel.
+ *
+ * What counts as a conflict is kept narrow on purpose, so the class shows real contradictions and nothing else:
+ *   - two sources that read the ground differently (satellite, drone, field observation);
+ *   - a clear ground reading against the deed title;
+ *   - against the licence register, only when the register is the real one. A DEMO register is generated data: it
+ *     cannot contradict anything, and comparing it made 155 of 542 parcels "conflict" in the pilot;
+ *   - tea seen on public land (K5).
+ * Area gaps from 10 m pixels (K6), open building footprints (K7) and deed-area gaps (K9) are review notes of their own
+ * rules; they say nothing about whether the sources agree on tea, so they neither make a conflict nor block agreement.
+ */
+export function classifyCertainty(p: AuditParcel, d: DroneVerificationParcel | null, checks: ComplianceCheck[], licenceVerified: boolean): Pick<ComplianceParcel, 'certainty' | 'certaintyReason'> {
+    const named: Array<[string, boolean | null]> = [['uydu', clearSatellite(p)], ['drone', clearDrone(d)], ['saha gözlemi', p.confirmation?.tea ?? null]];
+    const sources = named.filter((x): x is [string, boolean] => x[1] !== null);
+    const names = sources.map((x) => x[0]).join(' + ');
+    const demoNote = licenceVerified ? '' : ' Ruhsat kaydı DEMO olduğu için karşılaştırmaya girmedi.';
+    const open = (rules: string[]) => checks.filter((c) => rules.includes(c.rule) && (c.status === 'fail' || c.status === 'review')).map((c) => c.rule);
+
+    const groundSplit = sources.some((x) => x[1] !== sources[0]?.[1]);
+    const ground = sources.length && !groundSplit ? (sources[0] as [string, boolean])[1] : null;
+    const againstTitle = ground !== null && ground !== p.title.tea;
+    const againstLicence = licenceVerified && ((ground !== null && ground !== p.licence.licensed) || p.title.tea !== p.licence.licensed);
+    const publicLand = open(['K5']);
+    if (groundSplit || againstTitle || againstLicence || publicLand.length) {
+        const why = groundSplit
+            ? `${sources.map((x) => `${x[0]}: ${x[1] ? 'çay var' : 'çay yok'}`).join(', ')}`
+            : againstTitle
+              ? `${names} ${ground ? 'çay gösteriyor' : 'çay göstermiyor'}, tapu niteliği “${p.nature}”`
+              : againstLicence
+                ? `ruhsat kaydı ${p.licence.licensed ? 'var' : 'yok'}, ${ground === null ? `tapu niteliği “${p.nature}”` : `${names} ${ground ? 'çay gösteriyor' : 'çay göstermiyor'}`}`
+                : 'kamu arazisinde çay görülüyor (K5)';
+        return { certainty: 'conflict', certaintyReason: `Kaynaklar çelişiyor: ${why}.${demoNote}` };
     }
-    if (readings.length === 0) return { certainty: 'undecidable', certaintyReason: 'Net ve bağımsız görüntü okuması yok; küçük parsel, yetersiz uydu veya eksik/belirsiz drone nedeniyle karar verilemedi.' };
-    if (readings.length === 1) return { certainty: 'single_source', certaintyReason: `Yalnız ${satellite !== null ? 'uydu' : 'drone'} net okunuyor; kayıtlarla çelişki yok ancak ikinci bağımsız görüntü kaynağı olmadan karar verilemedi.` };
-    if (readings.length >= CERTAINTY_RULES.independentSourcesForAgreement && !checks.some((c) => c.status === 'fail' || c.status === 'review')) {
-        return { certainty: 'agreed', certaintyReason: 'Uydu ve drone aynı yönde; tapu niteliği ve ruhsat kaydı tutarlı, açık kural yok. Kaynaklar uyumlu; ön değerlendirmedir, idari karar değildir.' };
-    }
-    return { certainty: 'undecidable', certaintyReason: 'Görüntü okumaları aynı yönde olsa da açık kurallar kapanmadı; karar verilemedi.' };
+    if (sources.length === 0) return { certainty: 'undecidable', certaintyReason: `Net okuma veren kaynak yok (küçük parsel, kararsız uydu, eksik ya da belirsiz drone); karar verilemedi.${demoNote}` };
+    if (sources.length < CERTAINTY_RULES.independentSourcesForAgreement) return { certainty: 'single_source', certaintyReason: `Yalnız ${names} net okunuyor ve tapu niteliğiyle çelişmiyor; ikinci bağımsız kaynak yok.${demoNote}` };
+    return { certainty: 'agreed', certaintyReason: `${names} aynı yönde (${ground ? 'çay var' : 'çay yok'}) ve tapu niteliğiyle${licenceVerified ? ', ruhsat kaydıyla' : ''} tutarlı. Kaynaklar uyumlu; ön değerlendirmedir, idari karar değildir.${demoNote}` };
 }
 
 export function buildCompliance(audit: AuditFile, drone: DroneVerificationFile | null): ComplianceFile {
@@ -252,7 +276,7 @@ export function buildCompliance(audit: AuditFile, drone: DroneVerificationFile |
         const overall: ComplianceOverall = has('fail') ? 'finding' : !teaRelated && !has('review') ? 'out_of_scope' : has('review') ? 'review' : ['K2', 'K3', 'K4', 'K10'].some((r) => checks.find((c) => c.rule === r)?.status === 'pass') ? 'conforming' : 'no_evidence';
         const open = checks.filter((c) => order.includes(c.status)).sort((a, b) => order.indexOf(a.status) - order.indexOf(b.status)).map((c) => c.rule);
         const action = open.length ? ACTIONS[open[0] as string] ?? '' : overall === 'no_evidence' ? 'Çay varlığı için yeterli kanıt yok: drone görüntüsü ya da yerinde kontrol ile tamamlanmalı.' : 'İşlem gerekmiyor.';
-        return { key: p.key, block: p.block, parcel: p.parcel, nature: p.nature, locality: p.locality, areaM2: p.areaM2, licensed: p.licence.licensed, overall, ...classifyCertainty(p, byKey.get(p.key) ?? null, checks), open, checks, action };
+        return { key: p.key, block: p.block, parcel: p.parcel, nature: p.nature, locality: p.locality, areaM2: p.areaM2, licensed: p.licence.licensed, overall, ...classifyCertainty(p, byKey.get(p.key) ?? null, checks, licenceVerified), open, checks, action };
     });
     const byOverall: Record<ComplianceOverall, number> = { conforming: 0, finding: 0, review: 0, no_evidence: 0, out_of_scope: 0 };
     const byCertainty: ComplianceFile['summary']['byCertainty'] = { agreed: { parcels: 0, areaM2: 0 }, single_source: { parcels: 0, areaM2: 0 }, conflict: { parcels: 0, areaM2: 0 }, undecidable: { parcels: 0, areaM2: 0 } };

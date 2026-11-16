@@ -57,6 +57,34 @@ Licensing chain, in order: `audit-licensing` → (drone) `py/drone_sfm.py` → `
   `../cayhesabim`, do not merge to `main` of the shared remote.
 - No purchases, no paid services, no new accounts.
 
+## What the product is for, and how rules may change
+
+The owner sells this to ÇAYKUR as a tool that **decides as many gardens and parcels as the evidence allows**. Two
+outcomes count as success on a screen: "the two pruning methods agree" (combined class `confirmed`, shown as *uyumlu*)
+and "the sources agree" (compliance `agreed`). The owner wants these numbers **as high as measurement supports**; a
+change that shrinks them is a regression unless a measurement shows it removed false alarms.
+
+Caution is already built in (review classes, DEMO labels, "preliminary assessment"). Adding more of it by tightening
+a detection rule is not neutral: on 15–16 Nov 2026 a tightening of the combined pruning rule cut agreed gardens from
+10 to 1 in 2025-26 and removed no false alarm (0 before, 0 after on the mirrored series); it was withdrawn.
+
+Rules for any agent:
+
+- **Do not change a detection or promotion rule, a threshold, or what counts as agreement / conflict on reasoning
+  alone.** Measure it. Pruning: `node scripts/combined-validate.mjs … --season <y>` (mirrored series = false alarms,
+  shared simulated cuts = detection). NDVI screening: `node scripts/ndvi-threshold-check.mjs` in `cayhesabim/apps/api`.
+  Compliance certainty: report the class counts before and after.
+- A rule change goes in **only with the before/after numbers in the commit message**, and only if it keeps or raises
+  the agreed counts, or lowers measured false alarms. Otherwise leave the rule and tell the owner what you found.
+- **Never drop a validation, history or accuracy output because rules changed. Regenerate it** with the new rules in
+  the same change. A module without its measured numbers is worse than the old rule.
+- **A DEMO register is not evidence.** It may not create conflicts, findings of disagreement, or block agreement.
+- Weak notes (area gap from 10 m pixels, open building footprints, deed-area gap) stay in their own rule; they do not
+  turn a parcel into a conflict.
+- Presentation work (maps, exports, wording, layout) is welcome and needs none of this. Do not rename result classes or
+  hide result cards the owner already uses without being asked.
+- When unsure whether something is a rule change, ask the owner before touching it.
+
 ## Two agents work on this code
 
 Claude Code and Codex both work in this checkout and in `../cayhesabim`, at different times, for the same owner.
@@ -85,20 +113,23 @@ Use `corepack pnpm@8.15.0 --filter <pkg> …` there,
 `npx vue-tsc --noEmit` in `apps/web` for the web type-check. Local database: `node start-db.mjs` in `../lokal`.
 The API reads test credentials from `apps/api/.env`; never echo them.
 
-## Compliance certainty (offline)
+## Compliance certainty
 
-`check-compliance` reads only existing audit/drone JSON. Its additive `certainty` and `certaintyReason` fields do
-not change `overall` or `checks`. `CERTAINTY_RULES` defines conservative satellite thresholds: >= 6 whole pixels,
-no extrapolation beyond training, presence share/probability >= 0.6, or absence share < 0.05. Audit confidence is
-not reused because field confirmation can raise it. Partial, uncertain, low-confidence and unusable automatic
-drone readings are not clear imagery sources.
+`check-compliance` adds `certainty` / `certaintyReason` per parcel (`src/compliance/model.ts`, `classifyCertainty`);
+`overall` and `checks` are untouched. Sources are satellite, drone and field observation. Satellite is clear with
+≥ 3 whole pixels, no extrapolation beyond training, and presence share/probability ≥ 0.6 or absence share < 0.05.
+Low-confidence, partial, uncertain and unusable automatic drone readings are not clear.
 
-Conflicting records, clear imagery or field observations take precedence (`conflict`); incompatible open area,
-public-use and building rules also prevent agreement. One clear image source without contradiction is
-`single_source`; no clear reading or unresolved rules is `undecidable`. Only two agreeing image modalities with
-consistent records and no failed/review rule qualify as `agreed` ("Kaynaklar uyumlu", never verified truth).
-`summary.byCertainty` contains parcel counts and cadastral area sums. All but `agreed` remain undecided. DEMO
-register status and unverified drone reviews remain unchanged. Rerun `check-compliance` before export/sync.
+- `agreed` ("Kaynaklar uyumlu"): at least two sources say the same and match the deed title (and the licence register
+  when it is the real one).
+- `single_source`: one clear source that does not contradict the title.
+- `conflict`: sources read the ground differently, a clear reading contradicts the title, tea on public land (K5),
+  or — only with a real register — the register contradicts them.
+- `undecidable`: no clear source.
+
+A DEMO register is never compared (it made 155 of 542 parcels "conflict"); K6, K7 and K9 review notes neither make a
+conflict nor block agreement. Çataldere, 16 Nov 2026: agreed 64, single source 181, conflict 40, undecidable 257
+(was 33 / 93 / 155 / 261). Rerun `check-compliance` before export.
 
 ## Open items
 
@@ -116,10 +147,26 @@ No new field-verification workflow is planned. Use existing satellite observatio
 
 export-site adds remoteTerrain from existing drone project out/ortho.json and its published height PNG. It does not run reconstruction or enable the oblique-video orthophoto. Missing local height data yields null. Heights remain relative and georeferencing residuals are not independent accuracy. Follow the usual export, sync, build and restart flow.
 
-## Combined pruning v2
+## Combined pruning (v4)
 
-combine-pruning reads cached module outputs only. Matching events need overlapping observation intervals and nearby change dates; confirmed is internal shorthand for method agreement, never independent truth. Only pruned/deep_pruning plus deep pixels can qualify, and the prior-season test must be available and negative. Light or pending pixels cannot become deep cuts. All positive classes undergo seasonal-repeat screening. Supported target area uses the lower bound of agreed deep cuts; probable deep area is a separate scenario. Older validation and retrospective history are not exported with v2 because they use different promotion rules; regenerate compatible diagnostics before enabling them. Fusion and pixel source outputs remain untouched.
+`combine-pruning` reads the cached fusion and pixel-scan outputs and changes neither. The promotion rule is
+`promote()` in `src/cli/combine-pruning.ts`; `scripts/combined-validate.mjs` imports the same function, so the measured
+rule and the applied rule cannot drift apart.
 
-## Combined pruning v3 and rule checks
+- `confirmed` (*uyumlu*): both modules positive on the same event (change dates within 45 days). Nothing else is required.
+- `probable`: one module, or both on different dates. `light`: pixel-only cut that recovered quickly; not credited.
+- `seasonal`: a would-be `probable` whose step repeats a year earlier on the same pixels. Applied to `probable` only.
+- A pixel-only cut whose recovery cannot be watched yet (running season) stays `probable` without credited area.
+- Credited area = pixel cluster area, minus fusion reuse and minus cells already credited to the same garden in the
+  preceding seven seasons (`src/pruning/repeated-ground.ts`), never subtracted twice.
 
-Run node scripts/check-combined-rules.mjs for isolated rule regressions (no observation files written). V3 also excludes entire overlapping pixel cells previously credited to the same garden within the preceding seven seasons. This is conservative: subpixel cut positions and missing historical seasons are unknown. Existing fusion reuse and cell exclusion are combined without double subtraction. Recompute combined seasons chronologically before export; changed garden identifiers are not automatically linked. Existing mirror/synthetic caches lack complete fusion intervals/kinds, so they cannot establish current agreement accuracy; legacy validation/history stay disabled. The rule fixtures are not accuracy measurements.
+Measured on the mirrored series (false alarms) against the real run: 2023-24 confirmed 4 real / 3 mirrored (a noisy
+season: few Sentinel-2 dates), 2024-25 6 / 1, 2025-26 10 / 0. Stricter variants were measured on 16 Nov 2026
+(pixel verdict not light, fusion `pruned` only, `pruned`+`deep_pruning`+deep pixel, extra repeat test): none removed a
+mirrored false alarm that the plain rule keeps, all removed real agreement.
+
+Order after any change: `combined-validate` for each finished season → `combine-pruning` for every season in
+chronological order → `npm run pruning-history` → `export-site`. A validation file is shown only when its
+`rulesVersion` equals `COMBINED_RULES.version`; history only when it is newer than every season file.
+`node scripts/check-combined-rules.mjs` checks rule logic (21 fixtures); it is not an accuracy measurement.
+

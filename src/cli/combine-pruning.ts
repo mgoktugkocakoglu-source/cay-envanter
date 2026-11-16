@@ -12,11 +12,11 @@ Kullanım:
 
 Birleşik budama kararı (ayrı modül): çok-sensör kararı (fuse-pruning) ile piksel taramasını (scan-pixels) bahçe
 başına tek karara indirir. İki modülün hiçbirini değiştirmez; yalnızca çıktılarını okur.
-  uyumlu   : iki modül derin kesimde ve örtüşen gözlem aralığında uyuştu (değişim tarihleri ${45} gün içinde)
+  uyumlu   : iki modül de aynı olayı gördü (değişim tarihleri ${45} gün içinde)
   muhtemel : yalnız biri gördü (çok-sensör budandı/olası ya da piksel taraması derin budama)
   hafif    : yalnız piksel taraması, hızlı toparlanan kesim (1/7 hesabına girmez)
   mevsimsel: “muhtemel” olacaktı ama aynı piksellerde aynı düşüş bir önceki sezonda, aynı dönemde de var (1/7 hesabına girmez)
-Bekleyen ve hafif kesimler hedef hesabına girmez. Uyumlu alanın alt sınırı desteklenen hesaptır; muhtemel alan yalnız senaryodur.
+Toparlanması henüz izlenemeyen (bekleyen) kesimler ve yalnız piksel taramasının gördüğü hafif kesimler hedef hesabına girmez.
 Alan piksel taramasının çizdiği kümeden, o yoksa çok-sensörün alan çıktısından gelir. Radar/koherans yalnızca tanıktır.
 Çıktı: pruning-combined/season-<yyyy-yy>.json
 `;
@@ -24,14 +24,21 @@ Alan piksel taramasının çizdiği kümeden, o yoksa çok-sensörün alan çık
 export const COMBINED_RULES = {
     /** Two modules saw the same event when their change dates lie within this many days. */
     sameEventDays: 45,
-    version: 3, // Invalidate validation/history produced with the former promotion rules.
+    /**
+     * Rule version. 4 = the promotion rule the validation measures: both modules positive on the same event is
+     * "confirmed". Versions 2–3 also required pruned/deep_pruning + a deep pixel verdict + overlapping intervals + an
+     * available repeat test; measured on the mirrored series that removed real agreement (2025-26: 10 → 2 gardens)
+     * without removing a single false alarm (0 → 0; 2024-25: 6 → 1 against 1 → 1), so it was withdrawn.
+     * A promotion rule is changed only together with scripts/combined-validate.mjs numbers before and after.
+     */
+    version: 4,
     /** Radar witness: the garden's coherence rise / VH drop beyond the 90 % bar of quiet tea (block-scale radar test). */
     witnessZ: 1.2816,
     cycleSeasons: 7, // Compare only the preceding rotation, never future observations.
     /**
      * Seasonal pattern: a "probable" detection whose step is also there a year earlier on the same pixels (at least this
      * share of the drop) is the garden's yearly pattern (shadow, aspect, early flush), not a pruning. Needs only the
-     * previous season, so it is known at decision time. All positive detections are checked; agreement is not independent validation.
+     * previous season, so it is known at decision time. Confirmed detections are not touched: the test was measured on "probable" only.
      */
     seasonalRepeatShare: 0.6,
 };
@@ -87,6 +94,8 @@ export interface CombinedRate { hit: number; n: number; rate: number | null }
 /** Written by scripts/combined-validate.mjs: the combined classes on mirrored series and on the shared simulated cuts. */
 export interface CombinedValidation {
     season: string;
+    /** COMBINED_RULES.version the numbers were measured with; a file from other rules is not shown. */
+    rulesVersion?: number;
     generatedAt: string;
     gardens: number;
     falseAlarms: { confirmed: number; probable: number; light: number; seasonal?: number; note: string };
@@ -133,6 +142,24 @@ interface PixelGardenLite {
 interface RadarSingle { id: string; Koherans?: { z: number } | null; VH?: { z: number } | null }
 
 const dayGap = (a: string, b: string) => Math.abs(Date.parse(a) - Date.parse(b)) / 864e5;
+
+/** Same event: the pixel bracket (either end) touches the fusion change date within the tolerance. */
+export function sameEvent(fusionDate: string | null, pixelDate: string, pixelLastBefore: string | null): boolean {
+    return !!fusionDate && Math.min(dayGap(pixelDate, fusionDate), dayGap(pixelLastBefore ?? pixelDate, fusionDate)) <= COMBINED_RULES.sameEventDays;
+}
+/** The pixel scan counts as positive with a dated cut of any recovery kind. */
+export const pixelPositive = (verdict: string, date: string | null): boolean => (verdict === 'deep' || verdict === 'light' || verdict === 'pending') && !!date;
+/**
+ * The promotion rule on the bare facts, before the seasonal-pattern test. combine() and scripts/combined-validate.mjs
+ * both call it, so the measured rule and the applied rule cannot drift apart.
+ */
+export function promote(fusionPositive: boolean, fusionDate: string | null, pixelVerdict: string, pixelDate: string | null, pixelLastBefore: string | null): 'confirmed' | 'probable' | 'light' | 'none' {
+    const pPos = pixelPositive(pixelVerdict, pixelDate);
+    if (fusionPositive && pPos) return sameEvent(fusionDate, pixelDate as string, pixelLastBefore) ? 'confirmed' : 'probable';
+    if (fusionPositive) return 'probable';
+    if (pPos) return pixelVerdict === 'light' ? 'light' : 'probable';
+    return 'none';
+}
 const r3 = (x: number) => Math.round(x * 1000) / 1000;
 
 export function combine(fusion: FusionSeasonFile, pixelGardens: PixelGardenLite[] | null, radarSingles: RadarSingle[] | null, seasonalOf: SeasonalOf | null = null, live = false, previousCells: Map<string, Set<string>> = new Map()): { gardens: CombinedGarden[]; producers: CombinedProducer[] } {
@@ -142,25 +169,17 @@ export function combine(fusion: FusionSeasonFile, pixelGardens: PixelGardenLite[
         const v = g.verdict;
         const px = pixelById.get(g.id) ?? null;
         const fPos = v.class === 'pruned' || v.class === 'likely';
-        const pPos = !!px && (px.verdict === 'deep' || px.verdict === 'light' || px.verdict === 'pending') && px.best !== null;
+        const pPos = !!px && pixelPositive(px.verdict, px.best?.date ?? null);
         const main = px && px.mainCluster !== null ? (px.clusters[px.mainCluster] ?? null) : null;
         // Same event: the pixel bracket touches the fusion change date within the tolerance.
-        const fusionFrom = v.lastBeforeAt ?? v.changeDate;
-        const fusionTo = v.firstAfterAt ?? v.changeDate;
-        const pixelFrom = px?.best?.lastBefore ?? px?.best?.date;
-        const pixelTo = px?.best?.date;
-        // Nearby point estimates alone do not establish the same event: observation intervals must overlap.
-        const same = fPos && pPos && !!v.changeDate && !!fusionFrom && !!fusionTo && !!pixelFrom && !!pixelTo
-            && fusionFrom <= fusionTo && pixelFrom <= pixelTo
-            && fusionFrom <= pixelTo && pixelFrom <= fusionTo
-            && dayGap(pixelTo, v.changeDate) <= COMBINED_RULES.sameEventDays;
+        const same = fPos && pPos && sameEvent(v.changeDate, px!.best!.date, px!.best!.lastBefore);
         const agreement: CombinedAgreement = fPos && pPos ? (same ? 'both' : 'both_other_dates') : fPos ? 'fusion_only' : pPos ? 'pixel_only' : 'neither';
         let cls: CombinedClass;
         let kind: CombinedGarden['kind'] = null;
         let reason: string;
         if (agreement === 'both') {
-            cls = v.class === 'pruned' && v.kind === 'deep_pruning' && px!.verdict === 'deep' ? 'confirmed' : 'probable';
-            kind = px!.verdict === 'deep' ? 'deep' : null;
+            cls = 'confirmed';
+            kind = 'deep';
             reason = `İki modül de aynı kesimi gördü: çok-sensör “${v.class === 'pruned' ? 'budandı' : 'olası'}” (değişim ${v.changeDate}), piksel taraması ${px!.best!.lastBefore ?? '—'} → ${px!.best!.date} arasında ${px!.prunedM2} m²`;
         } else if (agreement === 'both_other_dates') {
             cls = 'probable';
@@ -184,19 +203,15 @@ export function combine(fusion: FusionSeasonFile, pixelGardens: PixelGardenLite[
             cls = 'none';
             reason = live ? 'Şimdiye kadar budama görülmedi (sezon sürüyor)' : 'İki modül de budama görmedi';
         }
-        // Preserve the pixel evidence: neither pending recovery nor a light cut proves deep pruning.
-        if (pPos && px!.verdict === 'light') {
-            cls = fPos ? 'probable' : 'light';
-            kind = 'light';
-            reason += ' · piksel okuması hafif kesim; derin budama sayılmaz';
-        } else if (pPos && px!.verdict === 'pending') {
-            cls = 'probable';
+        // A cut only the pixel scan saw and whose recovery cannot be watched yet (running season) is neither deep nor
+        // light so far: it stays "probable" without square metres until summer tells which.
+        if (agreement === 'pixel_only' && px!.verdict === 'pending') {
             kind = null;
             reason += ' · toparlanma bekleniyor; kesim türü ve hedef alanı henüz belirlenmedi';
         }
         // Seasonal pattern: a would-be "probable" whose step repeats a year earlier on the same pixels is not a pruning.
         let seasonal: CombinedGarden['seasonal'] = null;
-        if ((cls === 'confirmed' || cls === 'probable' || cls === 'light') && seasonalOf) {
+        if (cls === 'probable' && seasonalOf) {
             const cells = agreement !== 'fusion_only' && px && px.mainCluster !== null ? (px.px ?? []).filter((x) => x[5] > 0 && x[6] === px.mainCluster).map((x) => [x[0], x[1]] as [number, number]) : [];
             const useCluster = cells.length > 0;
             const date = useCluster ? px!.best!.date : (v.firstAfterAt ?? v.changeDate);
@@ -210,10 +225,6 @@ export function combine(fusion: FusionSeasonFile, pixelGardens: PixelGardenLite[
                     reason += ` · aynı ${useCluster ? 'piksellerde' : 'bahçede'} bir önceki sezonun aynı döneminde de benzer düşüş var (bu sezon ${check.drop}, önceki sezon ${check.prevStep}): mevsimsel desen, 1/7 hesabına girmez`;
                 }
             }
-        }
-        if (cls === 'confirmed' && (!seasonal || seasonal.repeat === null)) {
-            cls = 'probable';
-            reason += ' · mevsimsel tekrar sınaması yetersiz; yöntem uyumu doğrulanamadı';
         }
         // Bracket: the overlap when both saw the same event, else the one that saw it.
         let bracket: CombinedGarden['bracket'] = null;
@@ -238,12 +249,12 @@ export function combine(fusion: FusionSeasonFile, pixelGardens: PixelGardenLite[
         const coherenceZ = rad?.Koherans?.z ?? null;
         const vhZ = rad?.VH?.z ?? null;
         const radar = rad ? { coherenceZ: coherenceZ === null ? null : r3(coherenceZ), vhZ: vhZ === null ? null : r3(vhZ), witness: (coherenceZ !== null && coherenceZ >= COMBINED_RULES.witnessZ) || (vhZ !== null && vhZ <= -COMBINED_RULES.witnessZ) } : null;
-        const gross = counts && area ? Math.round((cls === 'confirmed' ? area.lowM2 : area.m2) * (1 - reusedShare)) : 0;
+        const gross = counts && area ? Math.round(area.m2 * (1 - reusedShare)) : 0;
         const cells = area?.source === 'pixel_scan' && px?.mainCluster != null
             ? (px.px ?? []).filter(x => x[5] > 0 && x[6] === px.mainCluster).map(x => [x[0], x[1], x[2]] as [number, number, number]) : [];
         const overlap = repeatedCellArea(cells, previousCells.get(g.id) ?? new Set());
         // Existing fusion reuse and pixel overlap must not be subtracted twice.
-        const pixelNet = counts && area ? Math.max(0, (cls === 'confirmed' ? area.lowM2 : area.m2) - overlap) : 0;
+        const pixelNet = counts && area ? Math.max(0, area.m2 - overlap) : 0;
         const net = Math.min(gross, Math.round(pixelNet));
         return {
             id: g.id,
@@ -383,7 +394,7 @@ async function main(): Promise<void> {
         dataThrough: pixel?.dataThrough ?? null,
         liveFalseAlarms: live && existsSync(join(pixDir, `validation-${season}-cv-mirror.json`)) ? (JSON.parse(readFileSync(join(pixDir, `validation-${season}-cv-mirror.json`), 'utf8')) as { positives: unknown[] }).positives.length : null,
         generatedAt: new Date().toISOString(),
-        method: 'combined-fusion-pixel-v3',
+        method: 'combined-fusion-pixel-v4',
         rules: { ...COMBINED_RULES, pruningRatio: fusion.rules.pruningRatio },
         sources: { fusion: !live, pixel: !!pixel, radarCheck: !!radar },
         summary: {
@@ -395,8 +406,11 @@ async function main(): Promise<void> {
             producers: Object.fromEntries(statuses.map((s) => [s, producers.filter((p) => p.status === s).length])) as Record<CombinedProducerStatus, number>,
             producersChanged: live ? 0 : producers.filter((p) => fusionOpen(p.fusionDecision) !== (p.status === 'met' || p.status === 'met_with_probable')).length,
         },
-        // Earlier synthetic/mirror validation uses different promotion rules; never present it as current.
-        validation: null,
+        // Shown only when it was measured with these rules (scripts/combined-validate.mjs stamps the rule version).
+        validation: (() => {
+            const v = existsSync(validationPath) ? (JSON.parse(readFileSync(validationPath, 'utf8')) as CombinedValidation) : null;
+            return v && v.rulesVersion === COMBINED_RULES.version ? v : null;
+        })(),
         gardens,
         producers,
     };

@@ -17,6 +17,8 @@ export function loadCombinedForBundle(neighborhoodDir: string) {
         .map((n) => JSON.parse(readFileSync(join(dir, n), 'utf8')) as CombinedSeasonFile);
     // Retrospective check and multi-year roll-up (pruning-history); absent until it has run.
     const historyPath = join(dir, 'history.json');
-    const history = !seasons.some(s => s.rules.version >= 2) && existsSync(historyPath) ? (JSON.parse(readFileSync(historyPath, 'utf8')) as HistoryFile) : null;
+    const stored = existsSync(historyPath) ? (JSON.parse(readFileSync(historyPath, 'utf8')) as HistoryFile) : null;
+    // The retrospective check is shown only when it is newer than every season file it reads (pruning-history reruns after combine-pruning).
+    const history = stored && seasons.every((s) => s.generatedAt <= stored.generatedAt) ? stored : null;
     return seasons.length ? { seasons, history } : null;
 }

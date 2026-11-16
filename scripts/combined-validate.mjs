@@ -10,6 +10,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
+import { COMBINED_RULES, pixelPositive, promote } from '../src/cli/combine-pruning.ts';
 import { addDays, PixelTimeline } from '../src/pruning/pixel-timeline.ts';
 
 const { values } = parseArgs({ options: { province: { type: 'string' }, district: { type: 'string' }, neighborhood: { type: 'string' }, season: { type: 'string', default: '2025' } } });
@@ -18,30 +19,18 @@ const year = Number(values.season);
 const season = `${year}-${String(year + 1).slice(2)}`;
 const root = join('data', 'library', slug(values.province), slug(values.district), slug(values.neighborhood));
 const read = (...p) => JSON.parse(readFileSync(join(root, ...p), 'utf8'));
-const SAME_EVENT_DAYS = 45;
-const gap = (a, b) => Math.abs(Date.parse(a) - Date.parse(b)) / 864e5;
-
-/** The combine-pruning rule on the bare facts: fusion positive + change date, pixel verdict + bracket. */
-function classify(fusionPositive, fusionDate, pixelVerdict, pixelDate, pixelLastBefore) {
-    const pPos = (pixelVerdict === 'deep' || pixelVerdict === 'light' || pixelVerdict === 'pending') && !!pixelDate;
-    if (fusionPositive && pPos) {
-        const same = !!fusionDate && Math.min(gap(pixelDate, fusionDate), gap(pixelLastBefore ?? pixelDate, fusionDate)) <= SAME_EVENT_DAYS;
-        return same ? 'confirmed' : 'probable';
-    }
-    if (fusionPositive) return 'probable';
-    if (pPos) return pixelVerdict === 'light' ? 'light' : 'probable';
-    return 'none';
-}
+// The rule under test is the one combine() applies: imported, never copied.
+const classify = promote;
 
 // Seasonal pattern (combine-pruning): a would-be "probable" whose step repeats a year earlier on the same pixels.
-const timeline = new PixelTimeline(join(root, 'pruning-pixels'), { repeatShare: 0.6 });
+const timeline = new PixelTimeline(join(root, 'pruning-pixels'), { repeatShare: COMBINED_RULES.seasonalRepeatShare });
 const repeats = (id, cells, before, date, opts) => {
     if (!date) return false;
     const pix = cells?.length ? timeline.indexes(cells) : timeline.gardenPix(id);
     if (!pix.length) return false;
     return timeline.repeatsPrev(pix, cells?.length ? timeline.refFor(id, pix) : null, before ?? addDays(date, -15), date, opts).repeat === true;
 };
-const pixelCounted = (v) => v === 'deep' || v === 'light' || v === 'pending';
+const pixelCounted = (v) => pixelPositive(v, 'x');
 
 // ── False alarms on the mirrored runs ──
 const fusionMirror = read('pruning-fusion', `validation-${season}-fv-mirror.json`);
@@ -86,6 +75,7 @@ const row = (key, hit) => ({ key, overall: rate(() => true, hit), deep: rate((t)
 const counted = (c) => c === 'confirmed' || c === 'probable';
 const out = {
     season,
+    rulesVersion: COMBINED_RULES.version,
     generatedAt: new Date().toISOString(),
     gardens: fusionMirror.gardens,
     falseAlarms: {
