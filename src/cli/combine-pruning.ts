@@ -1,3 +1,4 @@
+import { repeatedCellArea } from '../pruning/repeated-ground.ts';
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
@@ -23,9 +24,10 @@ Alan piksel taramasının çizdiği kümeden, o yoksa çok-sensörün alan çık
 export const COMBINED_RULES = {
     /** Two modules saw the same event when their change dates lie within this many days. */
     sameEventDays: 45,
-    version: 2, // Invalidate validation/history produced with the former promotion rules.
+    version: 3, // Invalidate validation/history produced with the former promotion rules.
     /** Radar witness: the garden's coherence rise / VH drop beyond the 90 % bar of quiet tea (block-scale radar test). */
     witnessZ: 1.2816,
+    cycleSeasons: 7, // Compare only the preceding rotation, never future observations.
     /**
      * Seasonal pattern: a "probable" detection whose step is also there a year earlier on the same pixels (at least this
      * share of the drop) is the garden's yearly pattern (shadow, aspect, early flush), not a pruning. Needs only the
@@ -52,6 +54,7 @@ export interface CombinedGarden {
     area: { m2: number; lowM2: number; highM2: number; source: 'pixel_scan' | 'change_patch' | 'ndvi_fraction' } | null;
     /** Square metres credited toward the 1/7 (confirmed and probable deep cuts, minus ground already credited in the cycle). */
     countedM2: number;
+    repeatExclusion?: { excludedM2: number; checked: boolean; method: string };
     fusion: { class: string; kind: string | null; z: number | null; changeDate: string | null; lastBeforeAt: string | null; firstAfterAt: string | null; unit: string; unitAreaM2: number; reusedShare: number };
     pixel: { verdict: string; date: string | null; lastBefore: string | null; score: number | null; prunedM2: number; clusters: number; kind: string | null; confidence: string | null } | null;
     radar: { coherenceZ: number | null; vhZ: number | null; witness: boolean } | null;
@@ -132,7 +135,7 @@ interface RadarSingle { id: string; Koherans?: { z: number } | null; VH?: { z: n
 const dayGap = (a: string, b: string) => Math.abs(Date.parse(a) - Date.parse(b)) / 864e5;
 const r3 = (x: number) => Math.round(x * 1000) / 1000;
 
-export function combine(fusion: FusionSeasonFile, pixelGardens: PixelGardenLite[] | null, radarSingles: RadarSingle[] | null, seasonalOf: SeasonalOf | null = null, live = false): { gardens: CombinedGarden[]; producers: CombinedProducer[] } {
+export function combine(fusion: FusionSeasonFile, pixelGardens: PixelGardenLite[] | null, radarSingles: RadarSingle[] | null, seasonalOf: SeasonalOf | null = null, live = false, previousCells: Map<string, Set<string>> = new Map()): { gardens: CombinedGarden[]; producers: CombinedProducer[] } {
     const pixelById = new Map((pixelGardens ?? []).map((g) => [g.id, g]));
     const radarById = new Map((radarSingles ?? []).map((r) => [r.id, r]));
     const gardens: CombinedGarden[] = fusion.gardens.map((g) => {
@@ -235,6 +238,13 @@ export function combine(fusion: FusionSeasonFile, pixelGardens: PixelGardenLite[
         const coherenceZ = rad?.Koherans?.z ?? null;
         const vhZ = rad?.VH?.z ?? null;
         const radar = rad ? { coherenceZ: coherenceZ === null ? null : r3(coherenceZ), vhZ: vhZ === null ? null : r3(vhZ), witness: (coherenceZ !== null && coherenceZ >= COMBINED_RULES.witnessZ) || (vhZ !== null && vhZ <= -COMBINED_RULES.witnessZ) } : null;
+        const gross = counts && area ? Math.round((cls === 'confirmed' ? area.lowM2 : area.m2) * (1 - reusedShare)) : 0;
+        const cells = area?.source === 'pixel_scan' && px?.mainCluster != null
+            ? (px.px ?? []).filter(x => x[5] > 0 && x[6] === px.mainCluster).map(x => [x[0], x[1], x[2]] as [number, number, number]) : [];
+        const overlap = repeatedCellArea(cells, previousCells.get(g.id) ?? new Set());
+        // Existing fusion reuse and pixel overlap must not be subtracted twice.
+        const pixelNet = counts && area ? Math.max(0, (cls === 'confirmed' ? area.lowM2 : area.m2) - overlap) : 0;
+        const net = Math.min(gross, Math.round(pixelNet));
         return {
             id: g.id,
             producerId: g.producerId,
@@ -245,7 +255,8 @@ export function combine(fusion: FusionSeasonFile, pixelGardens: PixelGardenLite[
             agreement,
             bracket,
             area,
-            countedM2: counts && area ? Math.round((cls === 'confirmed' ? area.lowM2 : area.m2) * (1 - reusedShare)) : 0,
+            countedM2: net,
+            repeatExclusion: { excludedM2: gross - net, checked: cells.length > 0, method: 'Same garden, prior credited pixel footprint; entire overlapping cells excluded conservatively. Missing seasons or changed garden IDs are not verified.' },
             fusion: { class: v.class, kind: v.kind ?? null, z: v.z, changeDate: v.changeDate, lastBeforeAt: v.lastBeforeAt, firstAfterAt: v.firstAfterAt, unit: g.unit, unitAreaM2: g.unitAreaM2, reusedShare },
             pixel: px ? { verdict: px.verdict, date: px.best?.date ?? null, lastBefore: px.best?.lastBefore ?? null, score: px.best?.score ?? null, prunedM2: px.prunedM2, clusters: px.clusters.length, kind: main?.kind ?? null, confidence: main?.confidence ?? null } : null,
             radar,
@@ -337,7 +348,24 @@ async function main(): Promise<void> {
             return pix.length ? timeline.repeatsPrev(pix, cells ? timeline.refFor(id, pix) : null, before, date) : null;
         }
         : null;
-    const { gardens, producers } = combine(fusion, pixel?.gardens ?? null, radar?.single ?? null, seasonalOf, live);
+    const previousCells = new Map<string, Set<string>>();
+    const combDir = join(store.dir, 'pruning-combined');
+    for (let prior = year - COMBINED_RULES.cycleSeasons; prior < year; prior++) {
+        const suffix = `${prior}-${String(prior + 1).slice(2)}`;
+        const combinedPath = join(combDir, `season-${suffix}.json`);
+        const scanPath = join(pixDir, `season-${suffix}.json`);
+        if (!existsSync(combinedPath) || !existsSync(scanPath)) continue;
+        const old = JSON.parse(readFileSync(combinedPath, 'utf8')) as CombinedSeasonFile;
+        const credited = new Set(old.gardens.filter(g => g.countedM2 > 0 && g.kind === 'deep').map(g => g.id));
+        const scan = JSON.parse(readFileSync(scanPath, 'utf8')) as { gardens: PixelGardenLite[] };
+        for (const g of scan.gardens) {
+            if (!credited.has(g.id) || g.mainCluster === null) continue;
+            const cells = previousCells.get(g.id) ?? new Set<string>();
+            for (const x of g.px ?? []) if (x[5] > 0 && x[6] === g.mainCluster) cells.add(`${x[0]}_${x[1]}`);
+            previousCells.set(g.id, cells);
+        }
+    }
+    const { gardens, producers } = combine(fusion, pixel?.gardens ?? null, radar?.single ?? null, seasonalOf, live, previousCells);
 
     const count = <K extends string>(keys: readonly K[], of: (g: CombinedGarden) => K) => Object.fromEntries(keys.map((k) => [k, gardens.filter((g) => of(g) === k).length])) as Record<K, number>;
     const classes = ['confirmed', 'probable', 'light', 'seasonal', 'none', 'no_data'] as const;
@@ -355,7 +383,7 @@ async function main(): Promise<void> {
         dataThrough: pixel?.dataThrough ?? null,
         liveFalseAlarms: live && existsSync(join(pixDir, `validation-${season}-cv-mirror.json`)) ? (JSON.parse(readFileSync(join(pixDir, `validation-${season}-cv-mirror.json`), 'utf8')) as { positives: unknown[] }).positives.length : null,
         generatedAt: new Date().toISOString(),
-        method: 'combined-fusion-pixel-v2',
+        method: 'combined-fusion-pixel-v3',
         rules: { ...COMBINED_RULES, pruningRatio: fusion.rules.pruningRatio },
         sources: { fusion: !live, pixel: !!pixel, radarCheck: !!radar },
         summary: {
