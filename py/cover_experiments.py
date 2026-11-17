@@ -27,6 +27,8 @@ RULES = {
     'trees': 300,
     'blockM': 300,
     'seed': 7,
+    # Weight of a pixel inside an area a person marked, against a pixel labelled by its deed title.
+    'fieldWeight': 3.0,
     # The ten bands the audit detector leaned on most (its importance list).
     'top10': ['B12_sum', 'B11_sum', 'B5_sum', 'NDVI_p50', 'B2_sum', 'evergreen', 'B11_aut', 'B12_aut', 'NDVI_p10', 'NDMI_off'],
 }
@@ -52,6 +54,53 @@ def load(path):
     block = lambda r: 'b%d_%d' % (float(r['lon']) * 111320 * math.cos(math.radians(lat0)) // RULES['blockM'], float(r['lat']) * 110540 // RULES['blockM'])
     groups = np.array([r['grp'] if r['grp'] != 'map' else block(r) for r in keep])
     return bands, X, y, groups, len(rows) - len(keep)
+
+
+def field_validation(root, bands, X, y, chosen_learner, chosen_bands):
+    """Scores against areas a person marked on the site, when there are any: the only test that is not a deed title.
+
+    `asIs`: the model trained on title labels alone, tested on every marked pixel (how good the current model really is).
+    `calibrated`: marked areas added to the training, tested area against area (what marking buys).
+    """
+    path = os.path.join(root, 'land-cover', 'field-samples.csv')
+    if not os.path.exists(path):
+        return None
+    rows = [r for r in csv.DictReader(open(path, encoding='utf8')) if r['cls'] in CLASSES and all(r[b] not in ('', None) for b in bands)]
+    counts = {c: {'areas': len({r['grp'] for r in rows if r['cls'] == c}), 'pixels': sum(1 for r in rows if r['cls'] == c)} for c in CLASSES}
+    out = {'areas': len({r['grp'] for r in rows}), 'pixels': len(rows), 'byClass': {c: v for c, v in counts.items() if v['pixels']}, 'asIs': None, 'calibrated': None, 'note': None}
+    tea = CLASSES.index('tea')
+    if not rows or not any(r['cls'] == 'tea' for r in rows) or all(r['cls'] == 'tea' for r in rows):
+        out['note'] = 'Ölçüm için hem çay hem çay olmayan işaretli alan gerekir.'
+        return out
+    idx = [bands.index(b) for b in chosen_bands]
+    FX = np.array([[float(r[b]) for b in bands] for r in rows], np.float32)[:, idx]
+    fy = np.array([CLASSES.index(r['cls']) for r in rows])
+    fg = np.array([r['grp'] for r in rows])
+
+    def score(pred):
+        is_tea, said = fy == tea, pred == tea
+        tp, fp, fn = int((is_tea & said).sum()), int((~is_tea & said).sum()), int((is_tea & ~said).sum())
+        recall, precision = tp / max(tp + fn, 1), tp / max(tp + fp, 1)
+        areas = sorted(set(fg))
+        # An area is read as a whole from its pixels, as a parcel is.
+        area_ok = sum(1 for a in areas if ((pred[fg == a] == tea).mean() >= 0.5) == (fy[fg == a][0] == tea))
+        return {'teaAccuracy': round(float((is_tea == said).mean()), 4), 'coverAccuracy': round(float((pred == fy).mean()), 4), 'teaRecall': round(recall, 4), 'teaPrecision': round(precision, 4),
+                'areaAccuracy': round(area_ok / len(areas), 4), 'calledTeaByClass': {c: round(float((pred[fy == i] == tea).mean()), 4) for i, c in enumerate(CLASSES) if (fy == i).any()}}
+
+    make = learners()[chosen_learner]
+    model = make().fit(X[:, idx], y)
+    out['asIs'] = score(model.classes_[np.argmax(model.predict_proba(FX), axis=1)])
+    folds = min(RULES['folds'], len(set(fg)))
+    if folds >= 3:
+        pred = np.zeros(len(fy), int)
+        for train, test in GroupKFold(n_splits=folds).split(FX, fy, fg):
+            # Marked pixels count more than title pixels: they are known, the titles are assumed.
+            m = make().fit(np.vstack([X[:, idx], FX[train]]), np.concatenate([y, fy[train]]), sample_weight=np.concatenate([np.ones(len(y)), np.full(len(train), RULES['fieldWeight'])]))
+            pred[test] = m.classes_[np.argmax(m.predict_proba(FX[test]), axis=1)]
+        out['calibrated'] = score(pred)
+    else:
+        out['note'] = 'Kalibrasyonlu ölçüm için en az üç işaretli alan gerekir.'
+    return out
 
 
 def learners():
@@ -157,7 +206,11 @@ def main():
                                            'accuracy': round((tp + tn) / max(len(rows), 1), 4), 'teaRecall': round(tp / max(tp + fn, 1), 4), 'teaPrecision': round(tp / max(tp + fp, 1), 4), 'byClass': by_class}
     print('parcel level:', json.dumps(parcel_level))
     called_tea = {c: round(float((pred[y == i] == tea).mean()), 4) if (y == i).any() else None for i, c in enumerate(CLASSES)}
+    field = field_validation(root, bands, X, y, cover_best['learner'], sets[cover_best['features']])
+    if field:
+        print('field labels:', json.dumps(field))
     out = {
+        'fieldValidation': field,
         'rules': RULES, 'classes': CLASSES, 'pixels': counts, 'groups': len(set(groups)), 'droppedPixels': dropped, 'bands': bands,
         'featureSets': {k: v for k, v in sets.items()}, 'results': results,
         'best': {'features': best['features'], 'learner': best['learner'], 'target': best['target']},

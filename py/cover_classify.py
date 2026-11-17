@@ -42,7 +42,16 @@ def main():
     rows = [r for r in csv.DictReader(open(os.path.join(cover_dir, 'samples.csv'), encoding='utf8')) if r['cls'] in CLASSES and all(r[b] != '' for b in bands)]
     X = np.array([[float(r[b]) for b in bands] for r in rows], np.float32)
     y = np.array([CLASSES.index(r['cls']) for r in rows])
-    model = learners()[chosen['learner']]().fit(X, y)
+    # Areas a person marked on the site join the training with more weight than title pixels.
+    weights = np.ones(len(y))
+    field_path = os.path.join(cover_dir, 'field-samples.csv')
+    if os.path.exists(field_path):
+        field = [r for r in csv.DictReader(open(field_path, encoding='utf8')) if r['cls'] in CLASSES and all(r[b] != '' for b in bands)]
+        if field:
+            X = np.vstack([X, np.array([[float(r[b]) for b in bands] for r in field], np.float32)])
+            y = np.concatenate([y, [CLASSES.index(r['cls']) for r in field]])
+            weights = np.concatenate([weights, np.full(len(field), EXPERIMENT_RULES['fieldWeight'])])
+    model = learners()[chosen['learner']]().fit(X, y, sample_weight=weights)
     importance = getattr(model, 'feature_importances_', None)
 
     pixels = [r for r in csv.DictReader(open(os.path.join(cover_dir, 'pixels.csv'), encoding='utf8')) if all(r[b] != '' for b in bands)]
@@ -54,6 +63,11 @@ def main():
         by_key.setdefault(r['key'], []).append(i)
     max_tea_elevation = max((float(r['elevation']) for r in rows if r['cls'] == 'tea' and r['elevation'] != ''), default=None)
 
+    # Reference-free groups (py/cover_groups.py), when they have been computed: shown beside the trained reading.
+    groups_path = os.path.join(cover_dir, 'groups.json')
+    groups = json.load(open(groups_path, encoding='utf8')) if os.path.exists(groups_path) else None
+    group_of = (groups or {}).get('parcels', {})
+
     tea = CLASSES.index('tea')
     parcels = []
     for line in open(os.path.join(root, 'parcels.ndjson'), encoding='utf8'):
@@ -61,7 +75,9 @@ def main():
             continue
         p = json.loads(line)['properties']
         idx = by_key.get(p['key'], [])
-        base = {'key': p['key'], 'block': p['block'], 'parcel': p['parcel'], 'nature': p['nature'], 'locality': p.get('locality', ''), 'areaM2': round(p['geometryAreaM2']), 'pixels': len(idx)}
+        g = group_of.get(p['key'])
+        base = {'key': p['key'], 'block': p['block'], 'parcel': p['parcel'], 'nature': p['nature'], 'locality': p.get('locality', ''), 'areaM2': round(p['geometryAreaM2']), 'pixels': len(idx),
+                'group': g['dominant'] if g else None, 'groupShares': g['shares'] if g else None}
         if len(idx) < RULES['minPixels']:
             parcels.append({**base, 'tea': 'not_assessable', 'teaShare': None, 'teaProbability': None, 'dominant': None, 'dominantShare': None, 'shares': None, 'confidence': None, 'beyondTraining': False})
             continue
@@ -97,6 +113,7 @@ def main():
             'parcelLevel': chosen.get('parcelLevel', {}).get(str(RULES['teaPresentShare'])),
             'comparison': experiments['results'], 'folds': EXPERIMENT_RULES['folds'],
             'topFeatures': [{'band': bands[i], 'importance': round(float(importance[i]), 4)} for i in np.argsort(-importance)[:12]] if importance is not None else [],
+            'fieldValidation': experiments.get('fieldValidation'),
             'maxTrainingTeaElevationM': max_tea_elevation, 'validationNote': experiments['method'],
         },
         'summary': {
@@ -105,6 +122,12 @@ def main():
             'byDominant': count('dominant', CLASSES + ['mixed']),
             'byConfidence': count('confidence', ['high', 'medium', 'low']),
             'teaAreaM2': round(sum(p['teaShare'] * p['areaM2'] for p in assessed)),
+        },
+        'unsupervised': None if not groups else {
+            'generatedAt': groups['generatedAt'], 'method': groups['method'], 'rules': groups['rules'], 'pixels': groups['pixels'], 'groups': groups['groups'], 'titleConsistency': groups['titleConsistency'],
+            'byGroup': {name: sum(1 for p in parcels if p['group'] == name) for name in [g['name'] for g in groups['groups']] + ['mixed']},
+            # How the two independent readings of a parcel sit together: trained tea reading against the reference-free group.
+            'againstTrained': {state: {name: sum(1 for p in parcels if p['tea'] == state and p['group'] == name) for name in [g['name'] for g in groups['groups']] + ['mixed']} for state in ('present', 'partial', 'absent')},
         },
         'parcels': parcels,
     }

@@ -204,3 +204,20 @@ spot: either the model cannot split hazelnut from tea, or those titles are outda
 Differences between the optical variants are inside the fold spread; radar alone is clearly worse, radar added to
 optical gains about one point. The choice of features, learner and share bands follows these numbers: change them only
 with a new run of the experiments and the table above updated.
+
+### Land cover without any reference, and marked areas
+
+`py/cover_groups.py <neighbourhood dir>` (after `sample-cover`, before `cover_classify`) groups every parcel pixel by its
+monthly NDVI curve and a few reflectances (k-means, 8 clusters, no radar: uncorrected backscatter follows the slope
+here) and names each group from its own average curve with fixed physical rules (`RULES` in the script): evergreen
+(tea candidate), evergreen in winter shadow, semi-evergreen, deciduous, sparse, built, bare. No title, no map, no trained
+model. It gives no accuracy figure and cannot split tea from other evergreens; its naming thresholds are uncalibrated.
+`cover_classify` merges it into `cover.json` (`unsupervised`, per parcel `group` / `groupShares`). Çataldere: of the 396
+parcels the trained model reads as tea, 230 are also evergreen-dominant here; these two-method parcels are the firmest.
+
+Marked areas are the real reference. The owner draws areas on the site ("İşaretleme" card, table `cover_labels`) and
+downloads them as GeoJSON; saved as `<neighbourhood>/land-cover/field-labels.geojson` they are sampled by
+`sample-cover` (`--only field` does only that, a few minutes) into `field-samples.csv`. Then `cover_experiments.py`
+(`--detail` is enough) reports `fieldValidation`: the title-trained model scored on the marked pixels, and the model
+with marked areas added to training (weight `fieldWeight`) scored area against area. `cover_classify.py` trains the
+final model with them. Never write test or invented areas into `field-labels.geojson`: it is the owner's ground truth.

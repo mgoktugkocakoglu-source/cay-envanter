@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import { area, buffer } from '@turf/turf';
@@ -14,12 +14,14 @@ type Poly = Polygon | MultiPolygon;
 
 const USAGE = `
 Kullanım:
-  npm run sample-cover -- --province Trabzon --district Of --neighborhood Çataldere [--only labels|pixels]
+  npm run sample-cover -- --province Trabzon --district Of --neighborhood Çataldere [--only labels|pixels|field]
 
 Arazi örtüsü modülünün Earth Engine adımı (ayrı modül; başka modülün çıktısına dokunmaz, TKGM'ye istek atmaz):
   labels : ilçe kütüphanesindeki etiketli pikseller → <mahalle>/land-cover/samples.csv
            çay / fındık / orman: tapu niteliği temiz parsellerin içi · çayır / ekili / yapı / diğer: ESA WorldCover
   pixels : hedef mahallenin bütün parsel pikselleri → <mahalle>/land-cover/pixels.csv
+  field  : sitede işaretlenen alanlar (<mahalle>/land-cover/field-labels.geojson, sitedeki “GeoJSON indir”) → field-samples.csv
+           Dosya varsa her çalıştırmada örneklenir; --only field yalnız bunu yapar (birkaç dakika).
 Sonra: .venv/Scripts/python.exe py/cover_experiments.py <mahalle klasörü>  ve  py/cover_classify.py <mahalle klasörü>
 `;
 
@@ -69,6 +71,21 @@ async function main(): Promise<void> {
     const stack = features.addBands(extras.select(['elevation', 'lon', 'lat']));
     writeFileSync(join(outDir, 'bands.json'), JSON.stringify({ generatedAt: new Date().toISOString(), rules: R, bands }));
     console.log(`Öznitelik: ${bands.length} bant · etiketli parsel ${labelled.length} · hedef parsel ${targets.length}`);
+
+    // Reference areas a person drew on the site: the only labels that are not deed titles or a global map.
+    const fieldPath = join(outDir, 'field-labels.geojson');
+    if (existsSync(fieldPath) && (!values.only || values.only === 'field')) {
+        const drawn = (JSON.parse(readFileSync(fieldPath, 'utf8')) as { features: Array<{ geometry: Poly; properties: { id: string; cls: string } }> }).features;
+        const fc = stack.sampleRegions({ collection: ee.FeatureCollection(drawn.map((f, n) => ee.Feature(ee.Geometry(f.geometry), { lid: n }))), properties: ['lid'], scale: R.scaleM, tileScale: 8 });
+        const fieldLines = [['cls', 'grp', 'nbh', 'elevation', 'lon', 'lat', ...bands].join(',')];
+        for (const [lid, ...rest] of await rowsOf(fc, ['lid', 'elevation', 'lon', 'lat', ...bands])) {
+            const f = drawn[lid as number] as (typeof drawn)[number];
+            fieldLines.push([f.properties.cls, `field:${f.properties.id}`, 'field', ...rest].join(','));
+        }
+        writeFileSync(join(outDir, 'field-samples.csv'), fieldLines.join('\n') + '\n');
+        console.log(`İşaretli alan: ${drawn.length} alan → ${fieldLines.length - 1} piksel → ${join(outDir, 'field-samples.csv')}`);
+    }
+    if (values.only === 'field') return;
 
     if (values.only !== 'pixels') {
         const byClass = (c: string) => labelled.filter((t) => t.cls === c);
