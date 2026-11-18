@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import { area, buffer } from '@turf/turf';
 import type { MultiPolygon, Polygon } from 'geojson';
-import { buildCoverFeatures, COVER_RULES } from '../cover/features.ts';
+import { buildCoverExtras, buildCoverFeatures, COVER_RULES } from '../cover/features.ts';
 import { evaluate, initEarthEngine } from '../ee/session.ts';
 import { LIBRARY_ROOT, NeighborhoodStore, slugify } from '../library/store.ts';
 import type { Parcel } from '../tkgm/types.ts';
@@ -14,7 +14,7 @@ type Poly = Polygon | MultiPolygon;
 
 const USAGE = `
 Kullanım:
-  npm run sample-cover -- --province Trabzon --district Of --neighborhood Çataldere [--only labels|pixels|field]
+  npm run sample-cover -- --province Trabzon --district Of --neighborhood Çataldere [--only labels|pixels|field|extra]
 
 Arazi örtüsü modülünün Earth Engine adımı (ayrı modül; başka modülün çıktısına dokunmaz, TKGM'ye istek atmaz):
   labels : ilçe kütüphanesindeki etiketli pikseller → <mahalle>/land-cover/samples.csv
@@ -22,6 +22,8 @@ Arazi örtüsü modülünün Earth Engine adımı (ayrı modül; başka modülü
   pixels : hedef mahallenin bütün parsel pikselleri → <mahalle>/land-cover/pixels.csv
   field  : sitede işaretlenen alanlar (<mahalle>/land-cover/field-labels.geojson, sitedeki “GeoJSON indir”) → field-samples.csv
            Dosya varsa her çalıştırmada örneklenir; --only field yalnız bunu yapar (birkaç dakika).
+  extra  : dış katmanlar (ağaç yüksekliği, Dynamic World, uydu gömme vektörleri), yukarıdaki dosyaların aynı piksellerinde
+           → samples-extra.csv, pixels-extra.csv, field-samples-extra.csv (satır satır hizalı). Her çalıştırmanın sonunda yapılır.
 Sonra: .venv/Scripts/python.exe py/cover_experiments.py <mahalle klasörü>  ve  py/cover_classify.py <mahalle klasörü>
 `;
 
@@ -85,7 +87,15 @@ async function main(): Promise<void> {
         writeFileSync(join(outDir, 'field-samples.csv'), fieldLines.join('\n') + '\n');
         console.log(`İşaretli alan: ${drawn.length} alan → ${fieldLines.length - 1} piksel → ${join(outDir, 'field-samples.csv')}`);
     }
-    if (values.only === 'field') return;
+    if (values.only === 'field') {
+        await sampleExtras(outDir, region);
+        return;
+    }
+
+    if (values.only === 'extra') {
+        await sampleExtras(outDir, region);
+        return;
+    }
 
     if (values.only !== 'pixels') {
         const byClass = (c: string) => labelled.filter((t) => t.cls === c);
@@ -146,6 +156,35 @@ async function main(): Promise<void> {
         }
         writeFileSync(join(outDir, 'pixels.csv'), out.join('\n') + '\n');
         console.log(`Hedef piksel: ${out.length - 1} satır → ${join(outDir, 'pixels.csv')}`);
+    }
+    await sampleExtras(outDir, region);
+}
+
+/**
+ * The external layers at the exact pixel centres already sampled: one output row per input row, in the same order,
+ * empty where a layer has no value. Reads lon / lat from each CSV, so the heavy Sentinel stack is not computed again.
+ */
+async function sampleExtras(outDir: string, region: EE): Promise<void> {
+    const extras = buildCoverExtras(ee, region);
+    const bands: string[] = await evaluate(extras.bandNames());
+    for (const name of ['samples', 'field-samples', 'pixels']) {
+        const path = join(outDir, `${name}.csv`);
+        if (!existsSync(path)) continue;
+        const lines = readFileSync(path, 'utf8').trim().split('\n');
+        const header = (lines[0] as string).split(',');
+        const lonAt = header.indexOf('lon');
+        const latAt = header.indexOf('lat');
+        const points = lines.slice(1).map((l) => l.split(',')).map((c) => [Number(c[lonAt]), Number(c[latAt])] as [number, number]);
+        const out: string[] = new Array(points.length).fill(bands.map(() => '').join(','));
+        const step = 2500;
+        for (let from = 0; from < points.length; from += step) {
+            const chunk = points.slice(from, from + step);
+            const fc = ee.FeatureCollection(chunk.map((c, n) => ee.Feature(ee.Geometry.Point(c), { idx: from + n })));
+            const sampled = extras.reduceRegions({ collection: fc, reducer: ee.Reducer.first(), scale: COVER_RULES.scaleM, tileScale: 4 });
+            for (const [idx, ...rest] of await rowsOf(sampled, ['idx', ...bands])) out[idx as number] = rest.join(',');
+            console.log(`  ${name}: dış katmanlar ${Math.min(from + step, points.length)}/${points.length}`);
+        }
+        writeFileSync(join(outDir, `${name}-extra.csv`), [bands.join(','), ...out].join('\n') + '\n');
     }
 }
 

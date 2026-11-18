@@ -137,7 +137,7 @@ conflict nor block agreement. Çataldere, 16 Nov 2026: agreed 64, single source 
 - Compliance rule set (`src/compliance/model.ts`, K1–K10) is a draft; its legal basis is not yet matched with ÇAYKUR.
 - Drone readings are unverified; no systematic field validation exists for any module.
 - Drone video 0–128 s and 340–409 s are not processed.
-- Land cover: hazelnut vs tea confusion needs field labels; the licence audit still uses its own detector (src/audit/tea-evidence.ts), not this module.
+- Land cover v2 is validated on one neighbourhood only; marked areas from the owner are pending. The licence audit still uses its own title-trained detector (src/audit/tea-evidence.ts): its tea readings carry the same title bias and should move to the land-cover reading once the owner agrees.
 
 ## Remote-only licensing workflow
 
@@ -170,54 +170,65 @@ chronological order → `npm run pruning-history` → `export-site`. A validatio
 `rulesVersion` equals `COMBINED_RULES.version`; history only when it is newer than every season file.
 `node scripts/check-combined-rules.mjs` checks rule logic (21 fixtures); it is not an accuracy measurement.
 
-
-## Land-cover module (tea or not, and what else grows there)
+## Land-cover module (tea or not, and what else is there) — method v2
 
 Separate module; reads the parcel library and Earth Engine, writes only `<neighbourhood>/land-cover/`. No TKGM requests.
+Research and measurements behind it: `docs/arazi-ortusu-arastirma-2026-11.md`.
 
 ```bash
-npm run sample-cover -- --province Trabzon --district Of --neighborhood Çataldere   # EE: samples.csv (labelled pixels, district pool) + pixels.csv (every pixel of the target parcels); ~30 min
-.venv/Scripts/python.exe py/cover_experiments.py data/library/trabzon/of/cataldere   # compares feature families and learners (~15 min); add --detail to redo only the chosen model's detail
-.venv/Scripts/python.exe py/cover_classify.py data/library/trabzon/of/cataldere      # cover.json: per parcel tea reading + cover shares + model card
+npm run sample-cover -- --province Trabzon --district Of --neighborhood Çataldere   # EE, ~1.5 h: samples.csv + pixels.csv (Sentinel stack) and their -extra.csv (canopy height, Dynamic World, embeddings)
+#   --only extra  re-samples only the external layers at the pixels already on disk (~45 min); --only field  only the marked areas
+.venv/Scripts/python.exe py/cover_reference.py data/library/trabzon/of/cataldere     # reference.json: parcels a person looked at (drone readings, field observations)
+.venv/Scripts/python.exe py/cover_groups.py    data/library/trabzon/of/cataldere     # optional: reference-free grouping (groups.json)
+.venv/Scripts/python.exe py/cover_classify.py  data/library/trabzon/of/cataldere     # cover.json (~10 min): parcel readings + every method scored on the reference
 ```
 
-`export-site` ships `cover.json` as the `landCover` block. The service account may not export tables, so rows come back
-through `reduceColumns(toList)` with numeric properties only (`rowsOf` in `src/cli/sample-cover.ts`).
+`export-site` ships `cover.json` as the `landCover` block (`version: 2`; the site refuses other versions). The service
+account may not export tables, so rows come back through `reduceColumns(toList)` with numeric properties only.
 
-Labels: tea / hazelnut / forest from clean deed titles (pixels 3 m inside the parcel); grass / crop / built / other from
-ESA WorldCover, never inside tea-titled parcels. 63 bands (`src/cover/features.ts`): seasonal Sentinel-2 composites, NDVI
-percentiles and monthly climatology, evergreen ratio, Sentinel-1 for four seasons plus its spread. No terrain, no position.
-Measured by grouped 5-fold cross-validation (a parcel is never in train and test). Çataldere, 17 Nov 2026, 8 529 pixels:
+**Why deed titles are not labels.** A model trained on titles learns the titles: tea gardens grown over with trees still
+read "Çay Bahçesi". Scored on the 120 reference parcels (72 tea, 48 no tea; none used in training) the title-trained
+model reached 52 % balanced accuracy with Sentinel features and 50 % with canopy height, Dynamic World and embeddings
+added, although cross-validation against titles had shown 86.5 %. **Never report agreement with deed titles as accuracy.**
 
-| features (learner) | tea-vs-rest accuracy | tea recall | tea precision | tea F1 |
+**Method.** Training labels come from two physical facts that agree on a pixel (`RULES` in `cover_classify.py`): share of
+canopy ≥ 3 m (Meta / WRI 1 m map) and winter NDVI as a share of summer NDVI. Tea = no trees + evergreen + dense; trees =
+under canopy; open = no trees + not evergreen; built = hardly any vegetation. A gradient-boosting model on current
+Sentinel-2 features (47 bands; canopy height is not an input, the height map is years old) learns from those pixels and
+reads the rest. A parcel is "tea present" at ≥ 50 % tea pixels. Classes: tea, trees, open, built. Hazelnut and forest are
+both "trees": no source at hand separates them, and no published Sentinel study separates tea from hazelnut.
+
+Çataldere, 18 Nov 2026, on the reference parcels:
+
+| method | tea found | no-tea right | balanced | without the 11 disputed readings |
 |---|---|---|---|---|
-| all 63 bands (boosting) — **used** | 86.5 % | 85.9 % | 78.0 % | 0.815 ± 0.053 |
-| optical 47 (boosting) | 85.1 % | 85.0 % | 76.1 % | 0.800 |
-| all 63 (random forest) | 84.4 % | 75.2 % | 79.4 % | 0.770 |
-| NDVI only, 20 bands (RF) | 83.0 % | 73.6 % | 77.2 % | 0.750 |
-| top-10 optical (RF) | 82.0 % | 71.7 % | 76.0 % | 0.734 |
-| radar only, 16 bands (RF) | 71.7 % | 50.9 % | 62.1 % | 0.555 |
+| consensus labels + Sentinel-2 — **used** | 65 / 72 | 41 / 48 | 87.8 % | 93.8 % |
+| rule: winter greenness + canopy height | 65 / 72 | 38 / 48 | 84.7 % | 93.8 % |
+| rule: winter greenness only | 66 / 72 | 37 / 48 | 84.4 % | 93.1 % |
+| consensus labels + satellite embeddings | 64 / 72 | 37 / 48 | 83.0 % | 89.0 % |
+| rule: canopy height only | 69 / 72 | 30 / 48 | 79.2 % | 88.5 % |
+| title labels, Sentinel-2 + Sentinel-1 | 63 / 72 | 8 / 48 | 52.1 % | 53.2 % |
+| title labels, every layer | 65 / 72 | 5 / 48 | 50.3 % | 51.9 % |
 
-Parcel level (held-out titled parcels with ≥ 3 pixels, "present" = tea share ≥ 0.3): 284 of 300 tea parcels found
-(94.7 %), precision 90.7 %; but 24 of 38 hazelnut-titled and 5 of 21 forest-titled parcels read as tea. That is the weak
-spot: either the model cannot split hazelnut from tea, or those titles are outdated. Only field labels can tell.
-Differences between the optical variants are inside the fold spread; radar alone is clearly worse, radar added to
-optical gains about one point. The choice of features, learner and share bands follows these numbers: change them only
-with a new run of the experiments and the table above updated.
+Nine other threshold sets, three seeds and training on the rest of the district alone gave 83–90 % (92–95 % without the
+disputed readings). "Disputed" = a "no tea" drone reading on a parcel where both physical facts show open evergreen
+cover; the drone outline is a few metres off there. Result: 254 parcels tea, 73 partial, 118 no tea, 97 not assessable;
+40 tea-titled parcels read as no tea.
 
-### Land cover without any reference, and marked areas
+Rules for changing it: thresholds, features, learner and the parcel share are chosen on the reference table above. Change
+them only with a new run and the table updated; do not tune a threshold to the reference parcels one at a time (120
+parcels overfit fast). The reference is small, from one neighbourhood and one flight, and its drone readings are
+unverified: say so wherever the numbers are shown.
 
-`py/cover_groups.py <neighbourhood dir>` (after `sample-cover`, before `cover_classify`) groups every parcel pixel by its
-monthly NDVI curve and a few reflectances (k-means, 8 clusters, no radar: uncorrected backscatter follows the slope
-here) and names each group from its own average curve with fixed physical rules (`RULES` in the script): evergreen
-(tea candidate), evergreen in winter shadow, semi-evergreen, deciduous, sparse, built, bare. No title, no map, no trained
-model. It gives no accuracy figure and cannot split tea from other evergreens; its naming thresholds are uncalibrated.
-`cover_classify` merges it into `cover.json` (`unsupervised`, per parcel `group` / `groupShares`). Çataldere: of the 396
-parcels the trained model reads as tea, 230 are also evergreen-dominant here; these two-method parcels are the firmest.
+**Marked areas.** The owner draws areas on the site ("İşaretleme" card, table `cover_labels`, seven classes: tea,
+hazelnut, forest, grass, crop, built, other) and downloads them as GeoJSON; saved as
+`<neighbourhood>/land-cover/field-labels.geojson` they are sampled by `sample-cover --only field` into
+`field-samples.csv` (+ `-extra`). `cover_classify.py` then scores the model on them (`fieldValidation`: as it is, and
+with the areas added to training, area against area) and trains the final model with them at weight `markedWeight`.
+Never write test or invented areas into `field-labels.geojson`: it is the owner's ground truth. With enough marked
+hazelnut and forest areas, splitting "trees" becomes testable.
 
-Marked areas are the real reference. The owner draws areas on the site ("İşaretleme" card, table `cover_labels`) and
-downloads them as GeoJSON; saved as `<neighbourhood>/land-cover/field-labels.geojson` they are sampled by
-`sample-cover` (`--only field` does only that, a few minutes) into `field-samples.csv`. Then `cover_experiments.py`
-(`--detail` is enough) reports `fieldValidation`: the title-trained model scored on the marked pixels, and the model
-with marked areas added to training (weight `fieldWeight`) scored area against area. `cover_classify.py` trains the
-final model with them. Never write test or invented areas into `field-labels.geojson`: it is the owner's ground truth.
+`py/cover_experiments.py` is the earlier title-trained study (feature families against titles). It is kept for the
+record and for `titleStudy` in the model card; nothing depends on it.
+
+`py/cover_groups.py` groups pixels by their monthly NDVI curve alone (k-means, physical naming). No accuracy figure.

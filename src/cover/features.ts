@@ -51,3 +51,37 @@ export function buildCoverFeatures(ee: EE, region: EE): { features: EE; extras: 
     const position = ee.Image.pixelLonLat().rename(['lon', 'lat']);
     return { features: ee.Image.cat([base, ...monthly, ...seasons, spread, range]).toFloat(), extras: ee.Image.cat([extras, position]).toFloat() };
 }
+
+/**
+ * Layers other people derived, sampled at the same pixels as the stack above. They are kept apart because each has its
+ * own date and its own errors, so their worth is measured separately (py/cover_experiments.py):
+ *   - `CH_*`  canopy height from the Meta / WRI 1 m map (imagery mostly 2018–2020), summarised over the 10 m pixel:
+ *             tea is a shrub of about a metre, hazelnut stands 3–5 m, forest well above. The ETH 10 m height map is
+ *             not used: it reads 16 m on open tea rows here.
+ *   - `GH`    forest height of the GLAD 2020 map (30 m), a second, coarser opinion.
+ *   - `DW_*`  mean Dynamic World class probabilities over the period.
+ *   - `A00…A63` Google's annual satellite embedding (AlphaEarth Foundations) of the year `embeddingYear`.
+ */
+export const COVER_EXTRA_RULES = {
+    /** Radius of the summary of the 1 m canopy heights around a pixel centre (half a 10 m pixel). */
+    heightRadiusM: 5,
+    /** Heights from here up are trees or tall shrubs, not a plucked tea canopy. */
+    tallM: 3,
+    embeddingYear: 2024,
+};
+
+export function buildCoverExtras(ee: EE, region: EE): EE {
+    const R = COVER_EXTRA_RULES;
+    const height = ee.ImageCollection('projects/meta-forest-monitoring-okw37/assets/CanopyHeight').filterBounds(region).mosaic().unmask(0);
+    const around = (image: EE) => image.reduceNeighborhood({ reducer: ee.Reducer.mean(), kernel: ee.Kernel.circle(R.heightRadiusM, 'meters') });
+    const canopy = ee.Image.cat([
+        around(height).rename('CH_mean'),
+        height.reduceNeighborhood({ reducer: ee.Reducer.max(), kernel: ee.Kernel.circle(R.heightRadiusM, 'meters') }).rename('CH_max'),
+        around(height.gte(R.tallM)).rename('CH_tall'),
+    ]);
+    const glad = ee.Image('projects/glad/GLCLU2020/Forest_height_2020').unmask(0).rename('GH');
+    const dwBands = ['water', 'trees', 'grass', 'flooded_vegetation', 'crops', 'shrub_and_scrub', 'built', 'bare', 'snow_and_ice'];
+    const dynamicWorld = ee.ImageCollection('GOOGLE/DYNAMICWORLD/V1').filterBounds(region).filterDate(COVER_RULES.start, COVER_RULES.end).select(dwBands).mean().rename(dwBands.map((b) => `DW_${b}`));
+    const embedding = ee.ImageCollection('GOOGLE/SATELLITE_EMBEDDING/V1/ANNUAL').filterBounds(region).filterDate(`${R.embeddingYear}-01-01`, `${R.embeddingYear + 1}-01-01`).mosaic();
+    return ee.Image.cat([canopy, glad, dynamicWorld, embedding]).toFloat();
+}
