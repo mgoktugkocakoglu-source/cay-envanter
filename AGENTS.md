@@ -232,3 +232,9 @@ hazelnut and forest areas, splitting "trees" becomes testable.
 record and for `titleStudy` in the model card; nothing depends on it.
 
 `py/cover_groups.py` groups pixels by their monthly NDVI curve alone (k-means, physical naming). No accuracy figure.
+
+**Single parcels.** `npm run cover-parcel -- --province … --district … --neighborhood … --parcels "252/30"` fetches a parcel
+the library lacks from TKGM (one query each, stops on the daily quota), samples its pixels and appends them to
+`pixels.csv` / `pixels-extra.csv`; rerun `cover_classify.py` for the reading. A sampled "pixel" is a cell of the
+composite's geographic grid, about 76 m² at this latitude, not a 100 m² Sentinel-2 pixel. Tea-titled training pixels
+reach 988 m; a reading well above that (snow in the winter composites) rests on the model's extrapolation.

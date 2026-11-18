@@ -33,6 +33,7 @@
         "verify-drone": "node src/cli/verify-drone.ts",
         "check-compliance": "node src/cli/check-compliance.ts",
         "sample-cover": "node src/cli/sample-cover.ts",
+        "cover-parcel": "node src/cli/cover-parcel.ts",
         "remote-evidence-coverage": "node src/cli/remote-evidence-coverage.ts"
     },
     "dependencies": {
