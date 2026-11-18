@@ -44,13 +44,16 @@ Sahadan bilinen durum `land-cover/field-notes.json` dosyasına yazılır, ardın
 | 241/6 | 1 Katlı Ahşap Ev ve Çayır | 3 721 | %0 | çay yok, açık alan %78 | yok |
 | 241/2 | Çayır | 1 510 | %0 | çay yok; seyrek örtü | yok |
 | 238/26 | Ahşap Ev ve Çayır | 5 100 | %0 | çay yok, açık alan %82 | yok |
-| 244/1 | Çay Bahçesi | 310 | %0 (4 piksel) | karar verilemez; kışın yeşil, ağaç altı | yok |
+| 244/1 | Çay Bahçesi | 310 | %0 (4 piksel) | model "ağaç" dedi: KAÇIRILDI | kullanıcı: yaklaşık 300 m² çay |
 
 Dersler: 800 m üstünde kış karı çayı gizler (kar maskeli `evergreen` bandı kullanılır); 800 m üstü referans çay
 parsellerinde 7/12 bulunur, altında 60/61. Yüksek kesimde model çıktısından "çay olamaz" denmez. Yalnız yaz
 verisiyle (Mayıs-Ağustos) okuma daha kötüdür (%84,4'e karşı %88,6).
 
-Referans başarımı: çay 67/73, çaysız 41/48, dengeli %88,6. Mahalle toplamı: var 242, kısmen 86, yok 123,
+244/1 kaçırması: 4 piksel, kış oranı 0,86 (eşik 0,90), ağaç yüksekliği haritası piksellerin yarısını "ağaç" gösteriyor
+(komşu ağaçların taşması ya da harita hatası). Küçük parsellerde (yaklaşık 500 m² altı) okuma güvenilmez.
+
+Referans başarımı (244/1 eklendikten sonra): çay 67/74, çaysız 41/48, dengeli %88,0; 800 m üstü çay 7/13. Mahalle toplamı: var 242, kısmen 86, yok 123,
 değerlendirilemez 97.
 
 ## Açık işler ve kararlar
@@ -58,7 +61,7 @@ değerlendirilemez 97.
 - Yukarıdaki yedi parsel site paketinde yok; paket yeniden dışa aktarılmadı.
 - Kullanıcı bildiği alanları sitede işaretleyecek ("Arazi Tespiti" > işaretleme); sonra
   `sample-cover --only field` ve `cover_classify.py` ile kalibrasyon.
-- 244/3, 241/6, 241/2, 238/26, 244/1 için saha bilgisi beklenir.
+- 244/3, 241/6, 241/2, 238/26 için saha bilgisi beklenir.
 - Karar bekleyenler: ruhsat denetimi yeni arazi tespiti okumasına geçsin mi; 3 ha üstü parseller yalnız çerçeve
   olarak mı çizilsin; drone doğrulama "Arazi Tespiti" altına mı alınsın.
 - Hiçbir şey push edilmedi; son commit'ler yereldedir.
