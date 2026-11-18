@@ -13,8 +13,10 @@ Why v2. A model trained on deed titles learns the titles: tea gardens that have 
 model was right about half the time, whatever features it was given. This step therefore takes its training labels
 from two physical facts that do not depend on any title:
   - canopy height (Meta / WRI 1 m map): tea is a shrub of about a metre, trees stand well above;
-  - winter greenness (Sentinel-2, winter NDVI as a share of summer NDVI): tea keeps its leaves, hazelnut,
-    broadleaf trees and meadows do not.
+  - winter greenness (Sentinel-2, leaf-off NDVI as a share of summer NDVI): tea keeps its leaves, hazelnut,
+    broadleaf trees and meadows do not. It is read from the snow-masked median of November-March, never from the
+    plain mean of the winter months: above about 800 m the ground lies under snow in mid-winter, and an average of
+    December-February then reads evergreen tea as leafless (a field-confirmed tea parcel at 1 200 m came out 2 % tea).
 Pixels where both agree clearly get a label ("consensus"); a classifier on current Sentinel-2 data learns from them
 and decides the rest. Canopy height is not an input of that classifier: the height map is several years old, the
 Sentinel-2 composites are current, so the model can follow what has changed since.
@@ -41,7 +43,7 @@ META = {'key', 'cls', 'grp', 'nbh', 'elevation', 'lon', 'lat'}
 
 RULES = {
     # ── consensus labels: a pixel is labelled only where canopy height and winter greenness agree clearly ──
-    # Tea: no trees over it, winter NDVI at least this share of summer NDVI, and a dense canopy all year.
+    # Tea: no trees over it, leaf-off NDVI (snow masked) at least this share of summer NDVI, and a dense canopy all year.
     'teaMaxTallShare': 0.1,
     'teaMinWinterRatio': 0.90,
     'teaMinNdvi': 0.70,
@@ -119,9 +121,8 @@ def main():
     optical = of('optical')
 
     def evidence(X):
-        winter = np.nanmean(X[:, [col('NDVI_m12'), col('NDVI_m01'), col('NDVI_m02')]], axis=1)
-        summer = np.nanmean(X[:, [col('NDVI_m06'), col('NDVI_m07'), col('NDVI_m08')]], axis=1)
-        return {'ratio': winter / np.maximum(summer, 1e-6), 'ndvi': X[:, col('NDVI_p50')], 'tall': X[:, col('CH_tall')], 'height': X[:, col('CH_mean')]}
+        # `evergreen` = median NDVI of the snow-masked leaf-off window (Nov-Mar) over the summer median (src/audit/tea-evidence.ts).
+        return {'ratio': X[:, col('evergreen')], 'ndvi': X[:, col('NDVI_p50')], 'tall': X[:, col('CH_tall')], 'height': X[:, col('CH_mean')]}
 
     def consensus(e):
         """-1 where the two facts do not agree clearly enough to label the pixel."""
@@ -157,10 +158,12 @@ def main():
         return {**count(set()), 'undisputed': count(set(disputed))}
 
     comparison = []
+    held_out = {}  # pixel readings of each method with the reference parcels kept out of its training
 
     def add(key, label, description, pixel_is_tea):
         row = {'key': key, 'label': label, 'description': description, **score(pixel_is_tea)}
         comparison.append(row)
+        held_out[key] = pixel_is_tea
         print('%-22s tea %2d/%2d  no-tea %2d/%2d  balanced %.3f  (undisputed %.3f)' % (key, row['teaFound'], row['teaTotal'], row['noTeaRight'], row['noTeaTotal'], row['balanced'], row['undisputed']['balanced']))
 
     if ref:
@@ -173,7 +176,7 @@ def main():
             m = make().fit(XS[~in_ref_s][:, cols], title_y[~in_ref_s])
             add(key, label, description, m.classes_[np.argmax(m.predict_proba(XP[:, cols]), axis=1)] == TITLE_CLASSES.index('tea'))
         # 2. the physical facts alone
-        add('rule_winter', 'Kural · yalnız kış yeşilliği', f'Eğitim yok: kış NDVI\'si yazın en az %{round(R["ruleWinterRatio"] * 100)}\'i ve yıl boyu yoğun örtü.', (eP['ratio'] >= R['ruleWinterRatio']) & (eP['ndvi'] >= R['ruleMinNdvi']))
+        add('rule_winter', 'Kural · yalnız kış yeşilliği', f'Eğitim yok: kar maskeli kış NDVI\'si yazın en az %{round(R["ruleWinterRatio"] * 100)}\'i ve yıl boyu yoğun örtü.', (eP['ratio'] >= R['ruleWinterRatio']) & (eP['ndvi'] >= R['ruleMinNdvi']))
         add('rule_height', 'Kural · yalnız ağaç yüksekliği', 'Eğitim yok: üzerinde ağaç yok ve yoğun yeşil örtü var.', (eP['tall'] < R['ruleMaxTallShare']) & (eP['ndvi'] >= R['ruleMinNdvi']))
         add('rule_both', 'Kural · kış yeşilliği + ağaç yüksekliği', 'Eğitim yok: iki fiziksel ölçüt birlikte.', rule_p)
         # 3. consensus-labelled training, reference parcels kept out
@@ -232,6 +235,7 @@ def main():
     groups_path = os.path.join(cover_dir, 'groups.json')
     groups = json.load(open(groups_path, encoding='utf8')) if os.path.exists(groups_path) else None
     group_of = (groups or {}).get('parcels', {})
+    elevation_p = np.array([num(r, 'elevation') for r in P])
     by_key = {}
     for i, k in enumerate(key_p):
         by_key.setdefault(k, []).append(i)
@@ -269,6 +273,7 @@ def main():
         parcels.append({
             **base, 'tea': state, 'teaShare': tea_share, 'teaProbability': round(float(proba[idx, tea].mean()), 3),
             'dominant': top if shares[top] >= R['dominantShare'] else 'mixed', 'dominantShare': shares[top], 'shares': shares, 'confidence': confidence,
+            'elevationM': round(float(np.nanmean(elevation_p[idx]))),
             'evidence': {'canopyHeightM': round(float(np.nanmean(eP['height'][idx])), 1), 'tallShare': round(tall, 2), 'winterRatio': round(ratio, 2), 'ruleTeaShare': round(rule_share, 2), 'ruleState': rule_state},
             'flags': flags,
         })
@@ -284,6 +289,10 @@ def main():
             title_study = {'features': best['features'], 'learner': best['learner'], 'teaAccuracy': best['teaAccuracy']['mean'], 'teaRecall': best['teaRecall']['mean'], 'teaPrecision': best['teaPrecision']['mean'],
                            'note': 'Tapu etiketleriyle eğitilen modelin, yine tapu etiketlerine karşı çapraz sınaması. Yüksek görünür, çünkü model tapuyu öğrenir; arazideki durumu ölçmez.'}
     used = next((c for c in comparison if c['key'] == 'consensus_optical'), None)
+    by_elevation = []
+    for label, lo, hi in (('800 m altı', 0, 800), ('800 m ve üzeri', 800, 99999)):
+        own = [(r, key_p == k) for k, r in ref.items() if r['tea'] and lo <= float(np.nanmean(elevation_p[key_p == k])) < hi]
+        by_elevation.append({'band': label, 'teaParcels': len(own), 'teaFound': sum(1 for r, m in own if 'consensus_optical' in held_out and held_out['consensus_optical'][m].mean() >= R['teaPresentShare'])})
     out = {
         'generatedAt': datetime.now(timezone.utc).isoformat(),
         'version': 2,
@@ -301,7 +310,9 @@ def main():
                 {'name': 'Meta / WRI ağaç yüksekliği haritası (1 m, görüntüler çoğunlukla 2018–2020)', 'role': 'Yalnız eğitim etiketlerini üretmek için; sınıflandırıcıya girdi değildir.'},
                 {'name': 'Drone okumaları ve saha gözlemleri', 'role': 'Yalnız sınama için; eğitimde kullanılmaz.'},
             ],
-            'validationNote': 'Sayılar tek mahalleden ve tek uçuştan gelen küçük bir sınama setine dayanır; başka bölgelerdeki başarımı göstermez.',
+            # Tea found among the reference tea parcels below and above the snow line of the winter composites.
+            'byElevation': by_elevation,
+            'validationNote': 'Sayılar tek mahalleden ve tek uçuştan gelen küçük bir sınama setine dayanır; başka bölgelerdeki başarımı göstermez. 800 m üzerinde kış karı çayın kış yeşilliğini bastırır; orada çay daha sık kaçırılır.',
         },
         'unsupervised': None if not groups else {
             'generatedAt': groups['generatedAt'], 'method': groups['method'], 'rules': groups['rules'], 'pixels': groups['pixels'], 'groups': groups['groups'], 'titleConsistency': groups['titleConsistency'],

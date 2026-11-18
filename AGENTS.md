@@ -198,22 +198,28 @@ Sentinel-2 features (47 bands; canopy height is not an input, the height map is 
 reads the rest. A parcel is "tea present" at ≥ 50 % tea pixels. Classes: tea, trees, open, built. Hazelnut and forest are
 both "trees": no source at hand separates them, and no published Sentinel study separates tea from hazelnut.
 
-Çataldere, 18 Nov 2026, on the reference parcels:
+Winter greenness is the `evergreen` band (snow-masked median NDVI of Nov-Mar over the summer median), not the mean of
+Dec-Feb: above ~800 m mid-winter snow makes evergreen tea look leafless. With the plain mean, parcel 252/30 at 1 190 m
+(owner confirmed from the ground: at least half tea) read 2 % tea; with the snow-masked band 51 %.
 
-| method | tea found | no-tea right | balanced | without the 11 disputed readings |
+Çataldere, 18 Nov 2026, on the reference parcels (121: 108 drone readings, 13 field observations; 73 tea, 48 no tea):
+
+| method | tea found | no-tea right | balanced | without the 12 disputed readings |
 |---|---|---|---|---|
-| consensus labels + Sentinel-2 — **used** | 65 / 72 | 41 / 48 | 87.8 % | 93.8 % |
-| rule: winter greenness + canopy height | 65 / 72 | 38 / 48 | 84.7 % | 93.8 % |
-| rule: winter greenness only | 66 / 72 | 37 / 48 | 84.4 % | 93.1 % |
-| consensus labels + satellite embeddings | 64 / 72 | 37 / 48 | 83.0 % | 89.0 % |
-| rule: canopy height only | 69 / 72 | 30 / 48 | 79.2 % | 88.5 % |
-| title labels, Sentinel-2 + Sentinel-1 | 63 / 72 | 8 / 48 | 52.1 % | 53.2 % |
-| title labels, every layer | 65 / 72 | 5 / 48 | 50.3 % | 51.9 % |
+| consensus labels + Sentinel-2 — **used** | 67 / 73 | 41 / 48 | 88.6 % | 95.9 % |
+| rule: winter greenness + canopy height | 69 / 73 | 37 / 48 | 85.8 % | 95.9 % |
+| rule: winter greenness only | 69 / 73 | 36 / 48 | 84.8 % | 94.5 % |
+| consensus labels + satellite embeddings | 68 / 73 | 36 / 48 | 84.1 % | 92.4 % |
+| rule: canopy height only | 70 / 73 | 30 / 48 | 79.2 % | 89.6 % |
+| title labels, Sentinel-2 + Sentinel-1 | 63 / 73 | 8 / 48 | 51.5 % | 51.5 % |
+| title labels, every layer | 65 / 73 | 5 / 48 | 49.7 % | 51.5 % |
 
-Nine other threshold sets, three seeds and training on the rest of the district alone gave 83–90 % (92–95 % without the
-disputed readings). "Disputed" = a "no tea" drone reading on a parcel where both physical facts show open evergreen
-cover; the drone outline is a few metres off there. Result: 254 parcels tea, 73 partial, 118 no tea, 97 not assessable;
-40 tea-titled parcels read as no tea.
+By elevation: 60 of 61 reference tea parcels found below 800 m, 7 of 12 at 800 m and up. High ground is the weak spot:
+few clear winter scenes, snow, and little tea in the training labels there. Earlier threshold sets, seeds and
+district-only training gave 83-90 %. "Disputed" = a "no tea" drone reading on a parcel where both physical facts show
+open evergreen cover; the drone outline is a few metres off there. Result: 245 parcels tea, 83 partial, 118 no tea,
+97 not assessable; 38 tea-titled parcels read as no tea. The owner's own ground statements for single parcels go in
+`land-cover/field-notes.json` and join the reference (`cover_reference.py`).
 
 Rules for changing it: thresholds, features, learner and the parcel share are chosen on the reference table above. Change
 them only with a new run and the table updated; do not tune a threshold to the reference parcels one at a time (120

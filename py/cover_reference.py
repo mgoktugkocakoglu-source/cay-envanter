@@ -7,6 +7,8 @@ Collects, into land-cover/reference.json, the parcels whose cover someone has lo
              found", low-confidence, partial and uncertain readings left out. These readings are visual and unverified,
              and "tea not found" is almost always "closed tree canopy": tea hidden under trees cannot be excluded.
   - field  : ground observations recorded with the licence audit (licence-audit/audit.json); they overrule a drone reading.
+  - owner : what the owner reported from the ground for single parcels, kept in land-cover/field-notes.json
+             ([{ "parcel": "252/30", "tea": true, "note": "...", "date": "2026-11-18" }]); it overrules both.
 Marked areas drawn on the site are a separate, stronger reference (field-samples.csv) and are not listed here.
 
 The file is the test set of py/cover_experiments.py. It is small and comes from one neighbourhood and one flight:
@@ -32,6 +34,16 @@ def main():
             c = p.get('confirmation')
             if c and c.get('tea') is not None:
                 out[p['key']] = {'key': p['key'], 'parcel': p['block'] + '/' + p['parcel'], 'tea': bool(c['tea']), 'source': 'field', 'note': c.get('note', '')}
+    notes_path = os.path.join(root, 'land-cover', 'field-notes.json')
+    if os.path.exists(notes_path):
+        keys = {}
+        for line in open(os.path.join(root, 'parcels.ndjson'), encoding='utf8'):
+            if line.strip():
+                p = json.loads(line)['properties']
+                keys[p['block'] + '/' + p['parcel']] = p['key']
+        for n in json.load(open(notes_path, encoding='utf8')):
+            if n['parcel'] in keys:
+                out[keys[n['parcel']]] = {'key': keys[n['parcel']], 'parcel': n['parcel'], 'tea': bool(n['tea']), 'source': 'field', 'note': n.get('note', '')}
     rows = sorted(out.values(), key=lambda r: r['parcel'])
     os.makedirs(os.path.join(root, 'land-cover'), exist_ok=True)
     json.dump({'parcels': rows, 'note': 'Drone okumaları görseldir ve doğrulanmamıştır; "çay bulunamadı" çoğunlukla kapalı ağaç örtüsüdür.'}, open(os.path.join(root, 'land-cover', 'reference.json'), 'w', encoding='utf8'), ensure_ascii=False)
