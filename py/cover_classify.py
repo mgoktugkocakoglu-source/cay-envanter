@@ -58,6 +58,15 @@ RULES = {
     'ruleWinterRatio': 0.86,
     'ruleMaxTallShare': 0.3,
     'ruleMinNdvi': 0.62,
+    # ── high ground ──
+    # On parcels at this mean elevation and up, a pixel the model does not read as tea still counts as tea when it has
+    # no trees over it, is densely vegetated and keeps this share of its summer NDVI in the leaf-off window. Snow and
+    # the few clear winter scenes pull the ratio of real tea below the 0.86 of the plain rule there, and the training
+    # labels hold little tea that high. Measured on the reference (18 Nov 2026): tea found at 800 m and up 7 -> 10 of
+    # 13, below 800 m unchanged, no-tea 41/48 unchanged. No "no tea" reference parcel exists above 800 m, so false
+    # alarms up there are not measured: promoted parcels carry the flag high_altitude_rule and never read "high".
+    'highElevationM': 800,
+    'highWinterRatio': 0.82,
     # ── parcel reading ──
     'teaPresentShare': 0.5,
     'teaAbsentShare': 0.1,
@@ -137,6 +146,9 @@ def main():
     yS, yP = consensus(eS), consensus(eP)
     rule_p = (eP['ratio'] >= R['ruleWinterRatio']) & (eP['tall'] < R['ruleMaxTallShare']) & (eP['ndvi'] >= R['ruleMinNdvi'])
     tea = CLASSES.index('tea')
+    elevation_p = np.array([num(r, 'elevation') for r in P])
+    parcel_elevation = {k: float(np.nanmean(elevation_p[key_p == k])) for k in set(key_p)}
+    high_rule_p = np.array([parcel_elevation[k] >= R['highElevationM'] for k in key_p]) & (eP['ratio'] >= R['highWinterRatio']) & (eP['tall'] < R['ruleMaxTallShare']) & (eP['ndvi'] >= R['ruleMinNdvi'])
 
     # ── independent reference parcels ──
     reference = json.load(open(os.path.join(cover_dir, 'reference.json'), encoding='utf8'))['parcels'] if os.path.exists(os.path.join(cover_dir, 'reference.json')) else []
@@ -183,10 +195,13 @@ def main():
         X_all, y_all = np.vstack([XS[~in_ref_s], XP[~in_ref_p]]), np.concatenate([yS[~in_ref_s], yP[~in_ref_p]])
         for key, label, description, cols in (
             ('consensus_embedding', 'Uzlaşı etiketi · gömme vektörleri', 'Etiketler iki fiziksel ölçütün uzlaştığı piksellerden; girdi Google uydu gömme vektörleri.', of('embedding')),
-            ('consensus_optical', 'Uzlaşı etiketi · Sentinel-2 (kullanılan)', 'Etiketler iki fiziksel ölçütün uzlaştığı piksellerden; girdi güncel Sentinel-2 öznitelikleri. Ağaç yüksekliği girdi değildir.', optical),
+            ('consensus_optical', 'Uzlaşı etiketi · Sentinel-2', 'Etiketler iki fiziksel ölçütün uzlaştığı piksellerden; girdi güncel Sentinel-2 öznitelikleri. Ağaç yüksekliği girdi değildir.', optical),
         ):
             m = make().fit(X_all[y_all >= 0][:, cols], y_all[y_all >= 0])
             add(key, label, description, m.classes_[np.argmax(m.predict_proba(XP[:, cols]), axis=1)] == tea)
+        add('consensus_optical_high', 'Uzlaşı etiketi · Sentinel-2 + yüksek rakım kuralı (kullanılan)',
+            f'Aynı model; {R["highElevationM"]} m ve üzerindeki parsellerde ağaçsız, yoğun ve kışın yeşilliğinin en az %{round(R["highWinterRatio"] * 100)}\'ini koruyan pikseller de çay sayılır.',
+            held_out['consensus_optical'] | high_rule_p)
 
     # ── areas a person marked on the site: scored, then added to the training ──
     field = None
@@ -230,12 +245,12 @@ def main():
     model = make().fit(X_train[labelled][:, optical], y_train[labelled], sample_weight=weights[labelled])
     proba = np.zeros((len(P), len(CLASSES)))
     proba[:, model.classes_] = model.predict_proba(XP[:, optical])
-    hard = proba.argmax(axis=1)
+    model_hard = proba.argmax(axis=1)
+    hard = np.where(high_rule_p, tea, model_hard)
 
     groups_path = os.path.join(cover_dir, 'groups.json')
     groups = json.load(open(groups_path, encoding='utf8')) if os.path.exists(groups_path) else None
     group_of = (groups or {}).get('parcels', {})
-    elevation_p = np.array([num(r, 'elevation') for r in P])
     by_key = {}
     for i, k in enumerate(key_p):
         by_key.setdefault(k, []).append(i)
@@ -267,9 +282,12 @@ def main():
             flags.append('evergreen_open_not_tea')  # open and evergreen, yet the model does not read tea
         if state == 'present' and rule_state == 'absent':
             flags.append('rule_disagrees')
+        promoted = state != 'absent' and float((model_hard[idx] == tea).mean()) < R['teaPresentShare'] <= tea_share
+        if promoted:
+            flags.append('high_altitude_rule')      # tea only by the relaxed winter rule of high ground
         certainty = float(proba[idx].max(axis=1).mean())
         agree = state == rule_state
-        confidence = 'low' if len(idx) < R['fewPixels'] or (state != rule_state and 'partial' not in (state, rule_state)) else 'high' if agree and certainty >= 0.8 else 'medium'
+        confidence = 'low' if len(idx) < R['fewPixels'] or (state != rule_state and 'partial' not in (state, rule_state)) else 'high' if agree and certainty >= 0.8 and not promoted else 'medium'
         parcels.append({
             **base, 'tea': state, 'teaShare': tea_share, 'teaProbability': round(float(proba[idx, tea].mean()), 3),
             'dominant': top if shares[top] >= R['dominantShare'] else 'mixed', 'dominantShare': shares[top], 'shares': shares, 'confidence': confidence,
@@ -288,11 +306,11 @@ def main():
         if best:
             title_study = {'features': best['features'], 'learner': best['learner'], 'teaAccuracy': best['teaAccuracy']['mean'], 'teaRecall': best['teaRecall']['mean'], 'teaPrecision': best['teaPrecision']['mean'],
                            'note': 'Tapu etiketleriyle eğitilen modelin, yine tapu etiketlerine karşı çapraz sınaması. Yüksek görünür, çünkü model tapuyu öğrenir; arazideki durumu ölçmez.'}
-    used = next((c for c in comparison if c['key'] == 'consensus_optical'), None)
+    used = next((c for c in comparison if c['key'] == 'consensus_optical_high'), None)
     by_elevation = []
     for label, lo, hi in (('800 m altı', 0, 800), ('800 m ve üzeri', 800, 99999)):
         own = [(r, key_p == k) for k, r in ref.items() if r['tea'] and lo <= float(np.nanmean(elevation_p[key_p == k])) < hi]
-        by_elevation.append({'band': label, 'teaParcels': len(own), 'teaFound': sum(1 for r, m in own if 'consensus_optical' in held_out and held_out['consensus_optical'][m].mean() >= R['teaPresentShare'])})
+        by_elevation.append({'band': label, 'teaParcels': len(own), 'teaFound': sum(1 for r, m in own if 'consensus_optical_high' in held_out and held_out['consensus_optical_high'][m].mean() >= R['teaPresentShare'])})
     out = {
         'generatedAt': datetime.now(timezone.utc).isoformat(),
         'version': 2,
@@ -312,7 +330,7 @@ def main():
             ],
             # Tea found among the reference tea parcels below and above the snow line of the winter composites.
             'byElevation': by_elevation,
-            'validationNote': 'Sayılar tek mahalleden ve tek uçuştan gelen küçük bir sınama setine dayanır; başka bölgelerdeki başarımı göstermez. 800 m üzerinde kış karı çayın kış yeşilliğini bastırır; orada çay daha sık kaçırılır.',
+            'validationNote': 'Sayılar tek mahalleden ve tek uçuştan gelen küçük bir sınama setine dayanır; başka bölgelerdeki başarımı göstermez. 800 m üzerinde kış karı çayın kış yeşilliğini bastırır; orada çay daha sık kaçırılır ve gevşetilmiş kış kuralı uygulanır. 800 m üzerinde "çay yok" olduğu bilinen sınama parseli yoktur; orada yanlış "çay var" oranı ölçülmemiştir.',
         },
         'unsupervised': None if not groups else {
             'generatedAt': groups['generatedAt'], 'method': groups['method'], 'rules': groups['rules'], 'pixels': groups['pixels'], 'groups': groups['groups'], 'titleConsistency': groups['titleConsistency'],
@@ -324,7 +342,7 @@ def main():
             'byTea': count('tea', ['present', 'partial', 'absent', 'not_assessable']),
             'byDominant': count('dominant', CLASSES + ['mixed']),
             'byConfidence': count('confidence', ['high', 'medium', 'low']),
-            'byFlag': {f: sum(1 for p in parcels if f in p['flags']) for f in ('tea_under_canopy', 'evergreen_open_not_tea', 'rule_disagrees')},
+            'byFlag': {f: sum(1 for p in parcels if f in p['flags']) for f in ('tea_under_canopy', 'evergreen_open_not_tea', 'rule_disagrees', 'high_altitude_rule')},
             'teaAreaM2': round(sum(p['teaShare'] * p['areaM2'] for p in assessed)),
             # Deed title against the reading, for the reader: how many titled tea gardens no longer read as tea.
             'titleTea': {state: sum(1 for p in assessed if p['nature'].strip().lower().startswith('çay bah') and p['tea'] == state) for state in ('present', 'partial', 'absent')},

@@ -53,12 +53,13 @@ verisiyle (Mayıs-Ağustos) okuma daha kötüdür (%84,4'e karşı %88,6).
 244/1 kaçırması: 4 piksel, kış oranı 0,86 (eşik 0,90), ağaç yüksekliği haritası piksellerin yarısını "ağaç" gösteriyor
 (komşu ağaçların taşması ya da harita hatası). Küçük parsellerde (yaklaşık 500 m² altı) okuma güvenilmez.
 
-Referans başarımı (244/1 eklendikten sonra): çay 67/74, çaysız 41/48, dengeli %88,0; 800 m üstü çay 7/13. Mahalle toplamı: var 242, kısmen 86, yok 123,
-değerlendirilemez 97.
+Referans başarımı (yüksek rakım kuralıyla, 18.11.2026): çay 70/74, çaysız 41/48, dengeli %90,0; 800 m üstü çay 10/13
+(kuralsız 7/13). 800 m üstünde "çay yok" referansı olmadığı için orada yanlış alarm ölçülemedi. Mahalle toplamı: var 242, kısmen 86, yok 123,
+değerlendirilemez 97 (kuraldan sonra: var 249, kısmen 85, yok 117).
 
 ## Açık işler ve kararlar
 
-- Yukarıdaki yedi parsel site paketinde yok; paket yeniden dışa aktarılmadı.
+- Yedi parsel ve yüksek rakım kuralı site paketine aktarıldı (18.11.2026).
 - Kullanıcı bildiği alanları sitede işaretleyecek ("Arazi Tespiti" > işaretleme); sonra
   `sample-cover --only field` ve `cover_classify.py` ile kalibrasyon.
 - 244/3, 241/6, 241/2, 238/26 için saha bilgisi beklenir.

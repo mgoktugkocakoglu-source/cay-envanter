@@ -202,23 +202,31 @@ Winter greenness is the `evergreen` band (snow-masked median NDVI of Nov-Mar ove
 Dec-Feb: above ~800 m mid-winter snow makes evergreen tea look leafless. With the plain mean, parcel 252/30 at 1 190 m
 (owner confirmed from the ground: at least half tea) read 2 % tea; with the snow-masked band 51 %.
 
-Çataldere, 18 Nov 2026, on the reference parcels (121: 108 drone readings, 13 field observations; 73 tea, 48 no tea):
+Çataldere, 18 Nov 2026, on the reference parcels (122: 108 drone readings, 14 field observations; 74 tea, 48 no tea):
 
 | method | tea found | no-tea right | balanced | without the 12 disputed readings |
 |---|---|---|---|---|
-| consensus labels + Sentinel-2 — **used** | 67 / 73 | 41 / 48 | 88.6 % | 95.9 % |
-| rule: winter greenness + canopy height | 69 / 73 | 37 / 48 | 85.8 % | 95.9 % |
-| rule: winter greenness only | 69 / 73 | 36 / 48 | 84.8 % | 94.5 % |
-| consensus labels + satellite embeddings | 68 / 73 | 36 / 48 | 84.1 % | 92.4 % |
-| rule: canopy height only | 70 / 73 | 30 / 48 | 79.2 % | 89.6 % |
-| title labels, Sentinel-2 + Sentinel-1 | 63 / 73 | 8 / 48 | 51.5 % | 51.5 % |
-| title labels, every layer | 65 / 73 | 5 / 48 | 49.7 % | 51.5 % |
+| consensus labels + Sentinel-2 + high-ground rule — **used** | 70 / 74 | 41 / 48 | 90.0 % | 97.3 % |
+| consensus labels + Sentinel-2 (model alone) | 67 / 74 | 41 / 48 | 88.0 % | 95.3 % |
+| rule: winter greenness + canopy height | 69 / 74 | 37 / 48 | 85.2 % | 95.2 % |
+| rule: winter greenness only | 69 / 74 | 36 / 48 | 84.1 % | 93.8 % |
+| consensus labels + satellite embeddings | 67 / 74 | 36 / 48 | 82.8 % | 91.1 % |
+| rule: canopy height only | 71 / 74 | 30 / 48 | 79.2 % | 89.6 % |
+| title labels, Sentinel-2 + Sentinel-1 | 63 / 74 | 8 / 48 | 50.9 % | 50.9 % |
+| title labels, every layer | 65 / 74 | 5 / 48 | 49.1 % | 50.9 % |
 
-By elevation: 60 of 61 reference tea parcels found below 800 m, 7 of 12 at 800 m and up. High ground is the weak spot:
-few clear winter scenes, snow, and little tea in the training labels there. Earlier threshold sets, seeds and
-district-only training gave 83-90 %. "Disputed" = a "no tea" drone reading on a parcel where both physical facts show
-open evergreen cover; the drone outline is a few metres off there. Result: 245 parcels tea, 83 partial, 118 no tea,
-97 not assessable; 38 tea-titled parcels read as no tea. The owner's own ground statements for single parcels go in
+**High-ground rule** (`highElevationM` 800, `highWinterRatio` 0.82): on parcels at 800 m and up a pixel also counts as
+tea when it has no trees over it, is dense and keeps 82 % of its summer NDVI in the leaf-off window. By elevation: 60 of
+61 reference tea parcels found below 800 m (unchanged), 10 of 13 at 800 m and up (model alone 7 of 13). Variants
+measured the same day: lower parcel share above 800 m (0.4: 8/13, 0.3: 9/13), ratio 0.86 (9/13), 0.78 (10/13, no gain),
+lower tea probability (7/13), retraining with relaxed labels above 800 m (8-9/13). **The reference holds no "no tea"
+parcel above 800 m, so false alarms up there are not measured.** Parcels that read tea only through the rule carry the
+flag `high_altitude_rule` and never "high" confidence (7 parcels); the share of high parcels read as tea went from
+30 to 37 of 47. Three high meadow parcels the owner asked about (241/6, 241/2, 238/26) stay at 0 % tea under every
+variant. Earlier threshold sets, seeds and district-only training gave 83-90 %. "Disputed" = a "no tea" drone reading
+on a parcel where both physical facts show open evergreen cover; the drone outline is a few metres off there. Result:
+249 parcels tea, 85 partial, 117 no tea, 97 not assessable; 35 tea-titled parcels read as no tea. Parcels under about
+500 m2 (a handful of pixels) are unreliable: 244/1 (310 m2, owner: about 300 m2 tea) reads 25 %. The owner's own ground statements for single parcels go in
 `land-cover/field-notes.json` and join the reference (`cover_reference.py`).
 
 Rules for changing it: thresholds, features, learner and the parcel share are chosen on the reference table above. Change
