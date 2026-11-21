@@ -9,7 +9,8 @@
 // The bot only reads module outputs; /sorgula is the one command that runs the engine (one TKGM query per missing
 // parcel, the daily quota is left to cover-parcel). Every reading is a preliminary assessment.
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -94,6 +95,7 @@ const HELP = [
     '/ozet  mahalle özeti ve sınama sayıları',
     '/parsel 252/30  parselin kayıtlı okuması',
     '/sorgula 252/30  kayıtta olmayan parseli TKGM’den alıp okur (yaklaşık 10-15 dk)',
+    '/harita 252/30  parsel sınırı çizilmiş hava görüntüsü',
     '/drone 106/1  parselin drone kareleri',
     '/sezon 2025-26  sezonun uydu görüntüleri',
     '/ekran  arazi tespiti ekran görüntüleri',
@@ -174,6 +176,20 @@ async function handle(message) {
         case '/sorgula':
             if (!PARCEL.test(arg)) return say(chat, 'Kullanım: /sorgula 252/30');
             return queryParcel(chat, arg);
+        case '/harita': {
+            if (!PARCEL.test(arg)) return say(chat, 'Kullanım: /harita 252/30');
+            if (!find(arg)) return say(chat, `${arg} kayıtta yok. Önce: /sorgula ${arg}`);
+            const out = path.join(os.tmpdir(), `parsel-${arg.replace('/', '-')}-${Date.now()}.jpg`);
+            const res = await run(path.join(ROOT, '.venv', 'Scripts', 'python.exe'), ['py/parcel_map.py', AREA.library, arg, out], 120_000);
+            if (res.code !== 0 || !existsSync(out)) return say(chat, `Harita üretilemedi:
+${res.out.slice(-400)}`);
+            try {
+                // The basemap is context only: its date is unknown, so it is not a reading of today's cover.
+                return await sendPhoto(chat, out, `${arg} · sarı çizgi TKGM parsel sınırı. Altlık görüntünün tarihi bilinmiyor; güncel durumu göstermeyebilir.`);
+            } finally {
+                rmSync(out, { force: true });
+            }
+        }
         case '/drone': {
             if (!PARCEL.test(arg)) return say(chat, 'Kullanım: /drone 106/1');
             const dir = path.join(IMAGERY, 'drone');
