@@ -252,3 +252,7 @@ the library lacks from TKGM (one query each, stops on the daily quota), samples 
 `pixels.csv` / `pixels-extra.csv`; rerun `cover_classify.py` for the reading. A sampled "pixel" is a cell of the
 composite's geographic grid, about 76 m² at this latitude, not a 100 m² Sentinel-2 pixel. Tea-titled training pixels
 reach 988 m; a reading well above that (snow in the winter composites) rests on the model's extrapolation.
+
+## Telegram bot
+
+`node scripts/telegram-bot.mjs` answers the owner from this machine by long polling (no dependency, no public address): parcel readings from `cover.json`, images already on disk, and `/sorgula` (runs `cover-parcel` + `cover_classify.py`, one job at a time). Token and `allowedChatIds` live in `secrets/telegram-bot.json`; other chats get only their chat id. `/claude` passes a read-only prompt to the Claude Code CLI when it is installed. Keep it read-only: a chat message must not change files, rules or bundles.
