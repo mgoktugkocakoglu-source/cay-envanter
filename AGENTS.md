@@ -229,6 +229,17 @@ on a parcel where both physical facts show open evergreen cover; the drone outli
 500 m2 (a handful of pixels) are unreliable: 244/1 (310 m2, owner: about 300 m2 tea) reads 25 %. The owner's own ground statements for single parcels go in
 `land-cover/field-notes.json` and join the reference (`cover_reference.py`).
 
+**Context reading for parcels too small to read** (state `context`, shown as "Çevresiyle birlikte çay"). A parcel with
+fewer than 3 pixels gets this state when at least 60 % of the pixels of neighbouring parcels within 15 m of its outline
+are tea (at least 10 such pixels) and its own pixel or two do not say otherwise. It is an inference from the
+surroundings, not a measurement, and is never counted in tea area or in "tea present". Tested on the reference with each
+parcel's own pixels left out (22 Nov 2026): the surroundings said tea for 51 of 122 parcels and were right for 48
+(wrong: 106/5, 106/36, 112/59); 25 m gave 48 of 52, 40 m 34 of 38; higher shares only decided fewer. The opposite
+inference ("no tea around, so none here") is not made: 244/1 (about 300 m2 of tea) has 12 % tea around it. Çataldere:
+20 of the 97 unreadable parcels became `context` (2 964 m2 together), 77 stay not assessable. Thin parcels (3-5 pixels)
+not read as tea whose surroundings are tea carry the flag `context_tea` (6). The test uses parcels large enough to be
+in the reference; it has not been checked on parcels that are themselves tiny.
+
 Rules for changing it: thresholds, features, learner and the parcel share are chosen on the reference table above. Change
 them only with a new run and the table updated; do not tune a threshold to the reference parcels one at a time (120
 parcels overfit fast). The reference is small, from one neighbourhood and one flight, and its drone readings are

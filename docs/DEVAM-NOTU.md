@@ -1,4 +1,4 @@
-# Devam notu (18.11.2026)
+# Devam notu (22.11.2026)
 
 Yeni bir oturumda kaldığımız yerden sürdürmek için. Ayrıntılı kurallar `AGENTS.md` dosyalarındadır; bu not yalnızca
 "şu an neredeyiz" bilgisini taşır.
@@ -55,7 +55,25 @@ verisiyle (Mayıs-Ağustos) okuma daha kötüdür (%84,4'e karşı %88,6).
 
 Referans başarımı (yüksek rakım kuralıyla, 18.11.2026): çay 70/74, çaysız 41/48, dengeli %90,0; 800 m üstü çay 10/13
 (kuralsız 7/13). 800 m üstünde "çay yok" referansı olmadığı için orada yanlış alarm ölçülemedi. Mahalle toplamı: var 242, kısmen 86, yok 123,
-değerlendirilemez 97 (kuraldan sonra: var 249, kısmen 85, yok 117).
+değerlendirilemez 97 (kuraldan sonra: var 249, kısmen 85, yok 117; 22.11: çevresiyle çay 20, değerlendirilemez 77).
+
+## 18-22 Kasım arasında eklenenler
+
+- **Çevresiyle birlikte çay (22.11):** 3 pikselden küçük parseller tek başına okunamaz. Çevresindeki 15 m içindeki
+  komşu piksellerin en az %60'ı çaysa parsel `context` sınıfına girer (dolaylı çıkarım, çay alanına sayılmaz).
+  Sınama: çevre 51 parsel için "çay" dedi, 48'inde doğru. Tersi kullanılmaz (244/1 çevresinde çay %12).
+  Çataldere: 97 okunamayan parselin 20'si bu sınıfa geçti, 77'si değerlendirilemez kaldı. Sitede görünür.
+- **300 m2 altı için asıl çözüm yüksek çözünürlüklü görüntü.** HGM'ye ortofoto talep formu hazırlandı
+  (`data/hgm-talep/`, gitignore; form ve e-posta metni kullanıcıda, gönderim ve ödeme kullanıcıda). TKGM Harita Dairesi
+  ikinci kapı; üniversite yazısıyla %50 indirim var. Görüntü ECW gelir, kot bilgisi içermez. Gelince küçük parselleri
+  okuyan ayrı bir modül kurulacak.
+- **Budamada saha kaydı var:** 136/12, 22.10.2026, kör test (`field-tests/results.json`): uydu 237 m2 buldu, üretici
+  tahmini 240 m2; tarih aralığı beyanı içeriyor. Tek örnek; "budanmadı" bilinen parsel yok.
+- **Telegram botu:** `node scripts/telegram-bot.mjs` (ayar `secrets/telegram-bot.json`). Kullanıcı bot işini
+  bıraktı; üzerinde çalışma yok. `/harita` için `py/parcel_map.py`.
+- **ÇAYKUR sunumu birkaç hafta içinde.** Sunum açısından eksikler, sırayla: gerçek ruhsat listesi (hepsi DEMO),
+  ruhsat denetiminin eski (tapu eğitimli) çay tespitini kullanması, tek mahalle, ince saha doğrulaması, K1-K10'un
+  mevzuat karşılığı, sunum ortamı (çevrimiçi demo ve PDF eski).
 
 ## Açık işler ve kararlar
 

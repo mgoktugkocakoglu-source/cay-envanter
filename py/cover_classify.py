@@ -31,6 +31,7 @@ import sys
 from datetime import datetime, timezone
 
 import numpy as np
+import shapely
 from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.model_selection import GroupKFold
 
@@ -67,6 +68,19 @@ RULES = {
     # alarms up there are not measured: promoted parcels carry the flag high_altitude_rule and never read "high".
     'highElevationM': 800,
     'highWinterRatio': 0.82,
+    # ── context reading, for parcels too small to read on their own ──
+    # A parcel with fewer than minPixels pixels cannot be read. Where the pixels of its neighbours within this distance
+    # of its outline are mostly tea, and its own pixel or two do not say otherwise, it is reported as "tea with its
+    # surroundings" (state `context`): an inference from the surrounding cover, not a measurement of the parcel.
+    # Measured on the reference with each parcel's own pixels left out (22 Nov 2026): at 15 m the surroundings said
+    # tea for 51 parcels and were right for 48; 47 undecided. Wider rings were worse (25 m: 48 of 52, 40 m: 34 of 38)
+    # and higher shares only decided fewer (0.7: 36 of 38, 0.8: 21 of 23). The opposite inference is not made: a small
+    # tea garden among meadows is exactly what "no tea around" would miss (244/1, about 300 m2 of tea, has 12 % tea
+    # around it).
+    'contextRadiusM': 15,
+    'contextMinPixels': 10,
+    'contextTeaShare': 0.6,
+    'contextOwnTeaShare': 0.5,
     # ── parcel reading ──
     'teaPresentShare': 0.5,
     'teaAbsentShare': 0.1,
@@ -150,6 +164,24 @@ def main():
     parcel_elevation = {k: float(np.nanmean(elevation_p[key_p == k])) for k in set(key_p)}
     high_rule_p = np.array([parcel_elevation[k] >= R['highElevationM'] for k in key_p]) & (eP['ratio'] >= R['highWinterRatio']) & (eP['tall'] < R['ruleMaxTallShare']) & (eP['ndvi'] >= R['ruleMinNdvi'])
 
+    # ── surroundings of every parcel: pixels of other parcels close to its outline ──
+    features = [json.loads(line) for line in open(os.path.join(root, 'parcels.ndjson'), encoding='utf8') if line.strip()]
+    lat_mid = float(np.mean([float(r['lat']) for r in P]))
+    kx, ky = 111320 * np.cos(np.radians(lat_mid)), 110574
+    px, py = np.array([float(r['lon']) for r in P]) * kx, np.array([float(r['lat']) for r in P]) * ky
+    points = shapely.points(px, py)
+    ring_of = {}
+    for f in features:
+        g = shapely.transform(shapely.geometry.shape(f['geometry']), lambda c: c * [kx, ky])
+        x0, y0, x1, y1 = g.bounds
+        pad = R['contextRadiusM'] + 1
+        near = np.where((px > x0 - pad) & (px < x1 + pad) & (py > y0 - pad) & (py < y1 + pad) & (key_p != f['properties']['key']))[0]
+        ring_of[f['properties']['key']] = near[shapely.distance(points[near], g) <= R['contextRadiusM']] if len(near) else near
+
+    def context_share(key, pixel_is_tea):
+        ring = ring_of.get(key, [])
+        return float(pixel_is_tea[ring].mean()) if len(ring) >= R['contextMinPixels'] else None
+
     # ── independent reference parcels ──
     reference = json.load(open(os.path.join(cover_dir, 'reference.json'), encoding='utf8'))['parcels'] if os.path.exists(os.path.join(cover_dir, 'reference.json')) else []
     ref = {r['key']: r for r in reference if (key_p == r['key']).sum() >= R['minPixels']}
@@ -170,6 +202,7 @@ def main():
         return {**count(set()), 'undisputed': count(set(disputed))}
 
     comparison = []
+    context_validation = None
     held_out = {}  # pixel readings of each method with the reference parcels kept out of its training
 
     def add(key, label, description, pixel_is_tea):
@@ -202,6 +235,13 @@ def main():
         add('consensus_optical_high', 'Uzlaşı etiketi · Sentinel-2 + yüksek rakım kuralı (kullanılan)',
             f'Aynı model; {R["highElevationM"]} m ve üzerindeki parsellerde ağaçsız, yoğun ve kışın yeşilliğinin en az %{round(R["highWinterRatio"] * 100)}\'ini koruyan pikseller de çay sayılır.',
             held_out['consensus_optical'] | high_rule_p)
+        # the context reading, tested where the truth is known: each reference parcel read from its surroundings alone
+        shares = {k: context_share(k, held_out['consensus_optical_high']) for k in ref}
+        said = {k: s for k, s in shares.items() if s is not None and s >= R['contextTeaShare']}
+        context_validation = {'parcels': len(ref), 'saidTea': len(said), 'saidTeaRight': sum(1 for k in said if ref[k]['tea']),
+                              'undecided': len(ref) - len(said), 'wrong': sorted(ref[k]['parcel'] for k in said if not ref[k]['tea']),
+                              'note': 'Her sınama parseli, kendi pikselleri dışarıda bırakılıp yalnız çevresindeki piksellerden okundu. Çevre "çay" dediğinde kaç kez doğru çıktığını gösterir; çok küçük parsellerde ayrıca sınanmamıştır.'}
+        print('context on reference: said tea %d, right %d, wrong %s' % (len(said), context_validation['saidTeaRight'], context_validation['wrong']))
 
     # ── areas a person marked on the site: scored, then added to the training ──
     field = None
@@ -256,16 +296,19 @@ def main():
         by_key.setdefault(k, []).append(i)
 
     parcels = []
-    for line in open(os.path.join(root, 'parcels.ndjson'), encoding='utf8'):
-        if not line.strip():
-            continue
-        p = json.loads(line)['properties']
+    hard_tea = hard == tea
+    for feature in features:
+        p = feature['properties']
+        around = context_share(p['key'], hard_tea)
+        context = None if around is None else {'pixels': int(len(ring_of[p['key']])), 'teaShare': round(around, 3)}
         idx = np.array(by_key.get(p['key'], []), int)
         g = group_of.get(p['key'])
         base = {'key': p['key'], 'block': p['block'], 'parcel': p['parcel'], 'nature': p['nature'], 'locality': p.get('locality', ''), 'areaM2': round(p['geometryAreaM2']), 'pixels': int(len(idx)),
                 'group': g['dominant'] if g else None, 'groupShares': g['shares'] if g else None}
+        base['context'] = context
         if len(idx) < R['minPixels']:
-            parcels.append({**base, 'tea': 'not_assessable', 'teaShare': None, 'teaProbability': None, 'dominant': None, 'dominantShare': None, 'shares': None, 'confidence': None, 'evidence': None, 'flags': []})
+            by_context = around is not None and around >= R['contextTeaShare'] and (len(idx) == 0 or float(hard_tea[idx].mean()) >= R['contextOwnTeaShare'])
+            parcels.append({**base, 'tea': 'context' if by_context else 'not_assessable', 'teaShare': None, 'teaProbability': None, 'dominant': None, 'dominantShare': None, 'shares': None, 'confidence': None, 'evidence': None, 'flags': []})
             continue
         shares = {c: round(float((hard[idx] == i).mean()), 3) for i, c in enumerate(CLASSES)}
         tea_share = shares['tea']
@@ -285,6 +328,8 @@ def main():
         promoted = state != 'absent' and float((model_hard[idx] == tea).mean()) < R['teaPresentShare'] <= tea_share
         if promoted:
             flags.append('high_altitude_rule')      # tea only by the relaxed winter rule of high ground
+        if state != 'present' and len(idx) < R['fewPixels'] and around is not None and around >= R['contextTeaShare']:
+            flags.append('context_tea')             # a thin parcel not read as tea whose surroundings are tea
         certainty = float(proba[idx].max(axis=1).mean())
         agree = state == rule_state
         confidence = 'low' if len(idx) < R['fewPixels'] or (state != rule_state and 'partial' not in (state, rule_state)) else 'high' if agree and certainty >= 0.8 and not promoted else 'medium'
@@ -296,7 +341,7 @@ def main():
             'flags': flags,
         })
 
-    assessed = [p for p in parcels if p['tea'] != 'not_assessable']
+    assessed = [p for p in parcels if p['tea'] in ('present', 'partial', 'absent')]
     count = lambda key, values: {v: sum(1 for p in parcels if p[key] == v) for v in values}
     experiments_path = os.path.join(cover_dir, 'experiments.json')
     title_study = None
@@ -322,7 +367,7 @@ def main():
             'reference': {'parcels': len(ref), 'tea': sum(1 for r in ref.values() if r['tea']), 'noTea': sum(1 for r in ref.values() if not r['tea']),
                           'drone': sum(1 for r in ref.values() if r['source'] == 'drone'), 'field': sum(1 for r in ref.values() if r['source'] == 'field'), 'disputed': disputed,
                           'note': 'Sınama parselleri bir kişinin baktığı parsellerdir: drone videosunda gözle okunanlar ve saha gözlemleri. Hiçbiri eğitimde kullanılmaz. Drone okumaları doğrulanmamıştır; “tartışmalı” olanlar, iki fiziksel ölçütün de açık ve her dem yeşil örtü gösterdiği “çay yok” okumalarıdır (çizimin birkaç metre kaymış olması olasıdır).'},
-            'comparison': comparison, 'used': used, 'titleStudy': title_study, 'fieldValidation': field,
+            'comparison': comparison, 'used': used, 'contextValidation': context_validation, 'titleStudy': title_study, 'fieldValidation': field,
             'sources': [
                 {'name': 'Sentinel-2 (2024–2026)', 'role': 'Sınıflandırıcının girdisi: mevsimlik bantlar, aylık yeşillik eğrisi, kış/yaz oranı.'},
                 {'name': 'Meta / WRI ağaç yüksekliği haritası (1 m, görüntüler çoğunlukla 2018–2020)', 'role': 'Yalnız eğitim etiketlerini üretmek için; sınıflandırıcıya girdi değildir.'},
@@ -339,10 +384,10 @@ def main():
         },
         'summary': {
             'parcels': len(parcels), 'assessed': len(assessed),
-            'byTea': count('tea', ['present', 'partial', 'absent', 'not_assessable']),
+            'byTea': count('tea', ['present', 'partial', 'absent', 'context', 'not_assessable']),
             'byDominant': count('dominant', CLASSES + ['mixed']),
             'byConfidence': count('confidence', ['high', 'medium', 'low']),
-            'byFlag': {f: sum(1 for p in parcels if f in p['flags']) for f in ('tea_under_canopy', 'evergreen_open_not_tea', 'rule_disagrees', 'high_altitude_rule')},
+            'byFlag': {f: sum(1 for p in parcels if f in p['flags']) for f in ('tea_under_canopy', 'evergreen_open_not_tea', 'rule_disagrees', 'high_altitude_rule', 'context_tea')},
             'teaAreaM2': round(sum(p['teaShare'] * p['areaM2'] for p in assessed)),
             # Deed title against the reading, for the reader: how many titled tea gardens no longer read as tea.
             'titleTea': {state: sum(1 for p in assessed if p['nature'].strip().lower().startswith('çay bah') and p['tea'] == state) for state in ('present', 'partial', 'absent')},
