@@ -134,7 +134,9 @@ export function decide(input: DecisionInput): DecisionResult {
     const state: TeaState = tea.confirmed === true ? 'present' : tea.confirmed === false ? 'absent' : tea.state;
     if (tea.confirmed !== null) flags.push('expert_confirmed');
     // Inconclusive readings lean to the side the numbers are nearer to.
-    const detected = state === 'present' || ((state === 'inconclusive' || state === 'not_assessable') && (tea.share ?? 0) >= (R.teaPresentShare + R.teaAbsentShare) / 2);
+    // A parcel with no reading at all (too small for the grid) leans to its title: nothing was seen against it, and
+    // "no reading" must not turn into "no tea". The demo register is built with the same rule.
+    const detected = state === 'present' || ((state === 'inconclusive' || state === 'not_assessable') && (tea.share === null ? title.tea : tea.share >= (R.teaPresentShare + R.teaAbsentShare) / 2));
     const leaning = TABLE[`${title.tea ? 1 : 0}${input.licensed ? 1 : 0}${detected ? 1 : 0}`] as Exclude<AuditDecision, 'needs_review'>;
 
     // Clear evidence: most of the parcel with a clear probability (presence), or next to nothing (absence).

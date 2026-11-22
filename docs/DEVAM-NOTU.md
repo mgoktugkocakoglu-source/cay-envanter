@@ -63,6 +63,11 @@ değerlendirilemez 97 (kuraldan sonra: var 249, kısmen 85, yok 117; 22.11: çev
   komşu piksellerin en az %60'ı çaysa parsel `context` sınıfına girer (dolaylı çıkarım, çay alanına sayılmaz).
   Sınama: çevre 51 parsel için "çay" dedi, 48'inde doğru. Tersi kullanılmaz (244/1 çevresinde çay %12).
   Çataldere: 97 okunamayan parselin 20'si bu sınıfa geçti, 77'si değerlendirilemez kaldı. Sitede görünür.
+- **Ruhsat denetimi arazi tespitine bağlandı (22.11):** `audit-licensing` çay okumasını `land-cover/cover.json`dan
+  alır (eski tapu eğitimli tespit `--tea-source title` ile). Sınama parsellerinde net uydu okuması: eski 67 doğru /
+  17 yanlış, yeni 78 doğru / 5 yanlış. Uyum raporu: uyumlu 64 -> 74, tek kaynak 181 -> 115, çelişki 40 -> 57,
+  karar verilemez 257 -> 302. Uydu-drone uyumu (K8) 69 -> 95. Sıra: cover_classify -> audit-licensing ->
+  verify-drone --project data/drone/cataldere-2024-07 -> check-compliance -> export-site.
 - **300 m2 altı için asıl çözüm yüksek çözünürlüklü görüntü.** HGM'ye ortofoto talep formu hazırlandı
   (`data/hgm-talep/`, gitignore; form ve e-posta metni kullanıcıda, gönderim ve ödeme kullanıcıda). TKGM Harita Dairesi
   ikinci kapı; üniversite yazısıyla %50 indirim var. Görüntü ECW gelir, kot bilgisi içermez. Gelince küçük parselleri
@@ -72,7 +77,7 @@ değerlendirilemez 97 (kuraldan sonra: var 249, kısmen 85, yok 117; 22.11: çev
 - **Telegram botu:** `node scripts/telegram-bot.mjs` (ayar `secrets/telegram-bot.json`). Kullanıcı bot işini
   bıraktı; üzerinde çalışma yok. `/harita` için `py/parcel_map.py`.
 - **ÇAYKUR sunumu birkaç hafta içinde.** Sunum açısından eksikler, sırayla: gerçek ruhsat listesi (hepsi DEMO),
-  ruhsat denetiminin eski (tapu eğitimli) çay tespitini kullanması, tek mahalle, ince saha doğrulaması, K1-K10'un
+  tek mahalle, ince saha doğrulaması, K1-K10'un
   mevzuat karşılığı, sunum ortamı (çevrimiçi demo ve PDF eski).
 
 ## Açık işler ve kararlar
@@ -81,6 +86,6 @@ değerlendirilemez 97 (kuraldan sonra: var 249, kısmen 85, yok 117; 22.11: çev
 - Kullanıcı bildiği alanları sitede işaretleyecek ("Arazi Tespiti" > işaretleme); sonra
   `sample-cover --only field` ve `cover_classify.py` ile kalibrasyon.
 - 244/3, 241/6, 241/2, 238/26 için saha bilgisi beklenir.
-- Karar bekleyenler: ruhsat denetimi yeni arazi tespiti okumasına geçsin mi; 3 ha üstü parseller yalnız çerçeve
+- Karar bekleyenler: 3 ha üstü parseller yalnız çerçeve
   olarak mı çizilsin; drone doğrulama "Arazi Tespiti" altına mı alınsın.
 - Hiçbir şey push edilmedi; son commit'ler yereldedir.

@@ -131,13 +131,37 @@ A DEMO register is never compared (it made 155 of 542 parcels "conflict"); K6, K
 conflict nor block agreement. Çataldere, 16 Nov 2026: agreed 64, single source 181, conflict 40, undecidable 257
 (was 33 / 93 / 155 / 261). Rerun `check-compliance` before export.
 
+## Licence audit reads the land-cover tea reading (22 Nov 2026)
+
+`audit-licensing` takes each parcel's tea share from `land-cover/cover.json` (version 2) when it exists and applies its
+own thresholds (`AUDIT_RULES`) to it; `--tea-source title` forces the old title-trained detector, which is also the
+fallback where no land-cover run exists. `audit.json` says which one was used in `teaSource`. A parcel the land-cover
+module could not read (or read only from its surroundings, state `context`) has no share: it is not assessable and
+leans to its deed title, never to "no tea". Parcels at 800 m and up carry `beyond_training`: the reading there does not
+make a finding on its own.
+
+Measured on the 122 reference parcels, readings the compliance report counts as clear (share >= 0.6 with probability
+>= 0.6 for tea, share < 0.05 for no tea): old detector 67 right, 17 wrong, 38 not clear; land-cover reading 78 right,
+5 wrong, 39 not clear. At the audit's own state thresholds: old 76 right / 35 wrong (34 of 48 no-tea parcels called
+tea), new 98 right / 13 wrong.
+
+Çataldere after the change (548 parcels; before: 542): audit tea land 396 -> 351, title outdated 70 -> 28, licence
+without tea 2 -> 17, out of scope 42 -> 78, review 21 -> 56. Compliance certainty: agreed 64 -> 74, single source
+181 -> 115, conflict 40 -> 57, undecidable 257 -> 302. The old detector called 233 parcels clear tea; the new reading
+128 clear tea and 81 clear no tea. The 17 new conflicts are clear "no tea" readings on tea-titled parcels (22) and
+similar, i.e. a satellite reading against the title, not the DEMO register. K8 (satellite and drone agree): pass
+69 -> 95, review 69 -> 40.
+
+Order after a land-cover run: `cover_classify.py` -> `audit-licensing` -> `verify-drone --project data/drone/<project>`
+-> `check-compliance` -> `export-site`.
+
 ## Open items
 
 - Real ÇAYKUR licence and producer lists (everything licence-based is DEMO).
 - Compliance rule set (`src/compliance/model.ts`, K1–K10) is a draft; its legal basis is not yet matched with ÇAYKUR.
 - Drone readings are unverified; no systematic field validation exists for any module.
 - Drone video 0–128 s and 340–409 s are not processed.
-- Land cover v2 is validated on one neighbourhood only; marked areas from the owner are pending. The licence audit still uses its own title-trained detector (src/audit/tea-evidence.ts): its tea readings carry the same title bias and should move to the land-cover reading once the owner agrees.
+- Land cover v2 is validated on one neighbourhood only; marked areas from the owner are pending. The licence audit reads it since 22 Nov 2026; the inventory detector (`detect-tea`, `parcels-tea.geojson`) is still title-trained.
 
 ## Remote-only licensing workflow
 

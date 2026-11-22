@@ -75,7 +75,20 @@ export interface AuditFile {
     method: string;
     rules: typeof AUDIT_RULES;
     evidenceRules: typeof EVIDENCE_RULES;
-    model: EvidenceModel;
+    /** The title-trained detector's own test; null when the audit never ran it. Kept for the record, not the reading in use. */
+    model: EvidenceModel | null;
+    /**
+     * Where the tea reading of the parcels comes from. `land_cover`: the land-cover module's parcel reading, with its
+     * score on parcels a person looked at. `title_model`: the audit's own detector, trained on deed titles.
+     */
+    teaSource: {
+        kind: 'land_cover' | 'title_model';
+        generatedAt: string | null;
+        reference: { parcels: number; teaFound: number; teaTotal: number; noTeaRight: number; noTeaTotal: number; balanced: number } | null;
+        byElevation: Array<{ band: string; teaParcels: number; teaFound: number }>;
+        highElevationM: number | null;
+        note: string;
+    };
     licenceSource: 'demo' | 'caykur';
     /** How the demo register was put together (absent with the real list). */
     demoLicences: { rules: typeof DEMO_LICENCE_RULES; byOrigin: Record<string, number>; byScenario: Record<string, number>; note: string } | null;
@@ -108,6 +121,19 @@ const DECISION_LABEL: Record<AuditDecision, string> = {
     needs_review: 'İNCELEME GEREKLİ',
 };
 
+/** The part of land-cover/cover.json the audit reads. */
+interface CoverFile {
+    version: number;
+    generatedAt: string;
+    rules: { highElevationM?: number };
+    model: {
+        used: { teaFound: number; teaTotal: number; noTeaRight: number; noTeaTotal: number; balanced: number } | null;
+        reference: { parcels: number };
+        byElevation?: Array<{ band: string; teaParcels: number; teaFound: number }>;
+    };
+    parcels: Array<{ key: string; tea: 'present' | 'partial' | 'absent' | 'context' | 'not_assessable'; teaShare: number | null; teaProbability: number | null; elevationM?: number; evidence: { winterRatio: number } | null }>;
+}
+
 function reasonOf(p: Omit<AuditParcel, 'reason' | 'geometry'>): string {
     const d = p.detection;
     const pct = (v: number | null) => (v === null ? '—' : `%${Math.round(v * 100)}`);
@@ -122,7 +148,7 @@ function reasonOf(p: Omit<AuditParcel, 'reason' | 'geometry'>): string {
                 ? `uydu tespiti kararsız (parselin ${pct(d.teaShare)} kadarı çay görünüyor)`
                 : `uydu tespiti: ${d.tea === 'present' ? `çay var, parselin ${pct(d.teaShare)} kadarı (≈ ${d.teaAreaM2} m²)` : `çay yok (${pct(d.teaShare)})`}`;
     const notes: string[] = [];
-    if (p.flags.includes('beyond_training')) notes.push(`parsel ${d.elevationM} m'de, modelin eğitildiği çay parsellerinin üstünde: uydu sonucu tek başına yeterli sayılmaz`);
+    if (p.flags.includes('beyond_training')) notes.push(`parsel ${d.elevationM} m'de: bu yükseklikte uydu okuması zayıftır, tek başına yeterli sayılmaz`);
     if (p.flags.includes('small_parcel') && d.tea !== 'not_assessable') notes.push(`yalnız ${d.fullPixels} tam piksel`);
     if (p.flags.includes('detectors_disagree')) notes.push(`envanter tespiti farklı söylüyor (${pct(d.inventoryShare)})`);
     if (p.flags.includes('public_land')) notes.push('tapu kamu arazisi');
@@ -148,7 +174,7 @@ async function fetchBuildings(ee: unknown, boundary: Poly): Promise<Array<Featur
 }
 
 async function main(): Promise<void> {
-    const { values } = parseArgs({ options: { province: { type: 'string' }, district: { type: 'string' }, neighborhood: { type: 'string' }, parcels: { type: 'string' }, refresh: { type: 'boolean', default: false } } });
+    const { values } = parseArgs({ options: { province: { type: 'string' }, district: { type: 'string' }, neighborhood: { type: 'string' }, parcels: { type: 'string' }, refresh: { type: 'boolean', default: false }, 'tea-source': { type: 'string' } } });
     if (!values.province || !values.district || !values.neighborhood) {
         console.log(USAGE);
         process.exit(1);
@@ -204,17 +230,24 @@ async function main(): Promise<void> {
     // ── 2. Detection: title-independent tea evidence (cached) and building footprints (cached) ──
     const evidencePath = join(outDir, 'tea-evidence.json');
     const buildingsPath = join(outDir, 'buildings.geojson');
+    // The land-cover reading (py/cover_classify.py) is the tea reading in use where it exists: it was scored on parcels a
+    // person looked at, the audit's own title-trained detector was not. `--tea-source title` forces the old detector.
+    const coverPath = join(store.dir, 'land-cover', 'cover.json');
+    const coverFile = values['tea-source'] !== 'title' && existsSync(coverPath) ? readJson<CoverFile>(coverPath) : null;
+    const cover = coverFile && coverFile.version === 2 ? coverFile : null;
+    const coverByKey = new Map((cover?.parcels ?? []).map((c) => [c.key, c]));
     let evidence = existsSync(evidencePath) && !values.refresh ? readJson<{ model: EvidenceModel; parcels: ParcelTeaEvidence[] }>(evidencePath) : null;
-    if (evidence && !parcels.every((p) => evidence!.parcels.some((e) => e.key === p.properties.key))) evidence = null;
+    // With the land-cover reading the cached detector output only fills display fields, so gaps in it do not matter.
+    if (!cover && evidence && !parcels.every((p) => evidence!.parcels.some((e) => e.key === p.properties.key))) evidence = null;
     let buildings = existsSync(buildingsPath) && !values.refresh ? readJson<FeatureCollection<Poly, { areaM2: number }>>(buildingsPath).features : null;
-    if (!evidence || !buildings) {
+    if ((!evidence && !cover) || !buildings) {
         const ee = await initEarthEngine();
         if (!buildings) {
             buildings = await fetchBuildings(ee, meta.boundary as Poly);
             writeFileSync(buildingsPath, JSON.stringify(featureCollection(buildings)));
             console.log(`Yapı izleri: ${buildings.length} (Microsoft bina izleri)`);
         }
-        if (!evidence) {
+        if (!evidence && !cover) {
             const districtDir = join(LIBRARY_ROOT, slugify(values.province), slugify(values.district));
             const pool = readdirSync(districtDir)
                 .filter((n) => existsSync(join(districtDir, n, 'parcels.ndjson')))
@@ -224,10 +257,29 @@ async function main(): Promise<void> {
             writeFileSync(evidencePath, JSON.stringify(evidence));
         }
     } else console.log('Tespit ve yapı izleri önbellekten.');
-    const evidenceByKey = new Map(evidence.parcels.map((e) => [e.key, e]));
-    const m = evidence.model;
-    console.log(`Model (ayrılmış test): doğruluk %${Math.round(m.heldOut.accuracy * 100)} · çay yakalama %${Math.round(m.heldOut.teaRecall * 100)} · çay kesinlik %${Math.round(m.heldOut.teaPrecision * 100)} · eğitimdeki en yüksek çay ${m.maxTrainingTeaElevationM} m`);
-    for (const g of m.byGroup) console.log(`  ${g.group.padEnd(10)} ${String(g.pixels).padStart(5)} piksel · çay denen pay 0,5: ${g.calledTea['0.5']} · 0,6: ${g.calledTea['0.6']} · 0,7: ${g.calledTea['0.7']}`);
+    const evidenceByKey = new Map((evidence?.parcels ?? []).map((e) => [e.key, e]));
+    const m = evidence?.model ?? null;
+    const used = cover?.model.used ?? null;
+    if (cover) console.log(`Çay okuması: arazi tespiti modülü (${cover.generatedAt.slice(0, 10)})${used ? ` · sınama: çay ${used.teaFound}/${used.teaTotal}, çaysız ${used.noTeaRight}/${used.noTeaTotal}` : ''}`);
+    /** The tea reading of one parcel from the source in use. */
+    const readingOf = (props: Parcel['properties']): { share: number | null; areaM2: number | null; probability: number | null; beyondTraining: boolean; state: TeaState; elevationM: number | null; evergreen: number | null } => {
+        const fullPixels = Math.floor(props.geometryAreaM2 / 100);
+        const e = evidenceByKey.get(props.key) ?? null;
+        if (!cover) {
+            return { share: e?.teaShare ?? null, areaM2: e?.teaAreaM2 ?? null, probability: e?.teaProbability ?? null, beyondTraining: e?.beyondTraining ?? false, state: teaStateOf(e?.teaShare ?? null, e?.teaAreaM2 ?? null, fullPixels, props.geometryAreaM2), elevationM: e?.elevationM ?? null, evergreen: e?.evergreen ?? null };
+        }
+        const c = coverByKey.get(props.key) ?? null;
+        // The audit's own thresholds (AUDIT_RULES) are applied to the land-cover share; a parcel the module could not read,
+        // or read only from its surroundings (`context`), has no share and stays not assessable.
+        const share = c?.teaShare ?? null;
+        const areaM2 = share === null ? null : Math.round(share * props.geometryAreaM2);
+        // Above this elevation the land-cover reading is weaker (snow in winter, no "no tea" reference parcel): a reading
+        // there does not carry a finding on its own, as with the old detector above its training range.
+        const beyondTraining = c?.elevationM != null && c.elevationM >= (cover.rules.highElevationM ?? Infinity);
+        return { share, areaM2, probability: c?.teaProbability ?? null, beyondTraining, state: teaStateOf(share, areaM2, fullPixels, props.geometryAreaM2), elevationM: c?.elevationM ?? e?.elevationM ?? null, evergreen: c?.evidence?.winterRatio ?? e?.evergreen ?? null };
+    };
+    if (m) console.log(`Model (ayrılmış test): doğruluk %${Math.round(m.heldOut.accuracy * 100)} · çay yakalama %${Math.round(m.heldOut.teaRecall * 100)} · çay kesinlik %${Math.round(m.heldOut.teaPrecision * 100)} · eğitimdeki en yüksek çay ${m.maxTrainingTeaElevationM} m`);
+    for (const g of m?.byGroup ?? []) console.log(`  ${g.group.padEnd(10)} ${String(g.pixels).padStart(5)} piksel · çay denen pay 0,5: ${g.calledTea['0.5']} · 0,6: ${g.calledTea['0.6']} · 0,7: ${g.calledTea['0.7']}`);
 
     // ── 3. ÇAYKUR licence register: the real list when supplied, else the demo registry ──
     const licenceByParcel = new Map<string, { areaM2: number; codes: string[] }>();
@@ -288,13 +340,13 @@ async function main(): Promise<void> {
             parcels.map((p) => {
                 const props = p.properties;
                 const id = `${props.block}/${props.parcel}`;
-                const e = evidenceByKey.get(props.key) ?? null;
+                const e = readingOf(props);
                 const conf = confirmationOf(props.block, props.parcel);
                 const titleTea = readTitle(props.nature).tea;
                 // Same reading as the decision takes when the detection is not conclusive: the side the share is nearer to.
-                const readable = e !== null && e.teaShare !== null;
-                const groundTea = conf && conf.tea !== null ? conf.tea : readable ? (e.teaShare as number) >= (AUDIT_RULES.teaPresentShare + AUDIT_RULES.teaAbsentShare) / 2 : titleTea;
-                return { key: props.key, block: props.block, parcel: props.parcel, parcelAreaM2: props.geometryAreaM2, titleTea, groundTea, teaAreaM2: e?.teaAreaM2 ?? null, registry: licenceByParcel.get(id) ?? null, notedUnlicensed: fieldNotes.some((n) => n.block === props.block && n.parcel === props.parcel && n.unlicensed), pinned: pins[id] ?? null };
+                const readable = e.share !== null;
+                const groundTea = conf && conf.tea !== null ? conf.tea : readable ? (e.share as number) >= (AUDIT_RULES.teaPresentShare + AUDIT_RULES.teaAbsentShare) / 2 : titleTea;
+                return { key: props.key, block: props.block, parcel: props.parcel, parcelAreaM2: props.geometryAreaM2, titleTea, groundTea, teaAreaM2: e.areaM2, registry: licenceByParcel.get(id) ?? null, notedUnlicensed: fieldNotes.some((n) => n.block === props.block && n.parcel === props.parcel && n.unlicensed), pinned: pins[id] ?? null };
             }),
         );
         licenceByParcel.clear();
@@ -333,14 +385,15 @@ async function main(): Promise<void> {
         const buildingState: BuildingState = conf?.building === true ? 'inside' : count > 0 ? 'inside' : touching > 0 ? 'boundary' : 'none';
         const lic = licenceByParcel.get(`${props.block}/${props.parcel}`) ?? null;
         const title = readTitle(props.nature);
-        const state = teaStateOf(e?.teaShare ?? null, e?.teaAreaM2 ?? null, fullPixels, props.geometryAreaM2);
+        const reading = readingOf(props);
+        const state = reading.state;
         const result = decide({
             title,
             licensed: !!lic,
             licensedAreaM2: lic?.areaM2 ?? null,
             parcelAreaM2: props.geometryAreaM2,
             licenceVerified: true,
-            tea: { state, share: e?.teaShare ?? null, areaM2: e?.teaAreaM2 ?? null, probability: e?.teaProbability ?? null, fullPixels, beyondTraining: e?.beyondTraining ?? false, inventoryShare: inventoryShare.get(props.key) ?? null, confirmed: conf ? conf.tea : null, sparse: conf?.sparse ?? false },
+            tea: { state, share: reading.share, areaM2: reading.areaM2, probability: reading.probability, fullPixels, beyondTraining: reading.beyondTraining, inventoryShare: inventoryShare.get(props.key) ?? null, confirmed: conf ? conf.tea : null, sparse: conf?.sparse ?? false },
             building: buildingState,
         });
         const base: Omit<AuditParcel, 'reason' | 'geometry'> = {
@@ -354,17 +407,17 @@ async function main(): Promise<void> {
             title,
             detection: {
                 tea: state,
-                teaShare: e?.teaShare ?? null,
-                teaAreaM2: e?.teaAreaM2 ?? null,
-                teaProbability: e?.teaProbability ?? null,
+                teaShare: reading.share,
+                teaAreaM2: reading.areaM2,
+                teaProbability: reading.probability,
                 inventoryShare: inventoryShare.get(props.key) ?? null,
                 fullPixels,
-                beyondTraining: e?.beyondTraining ?? false,
+                beyondTraining: reading.beyondTraining,
                 ndviSummer: e?.ndviSummer ?? null,
                 ndviLeafOff: e?.ndviLeafOff ?? null,
-                evergreen: e?.evergreen ?? null,
+                evergreen: reading.evergreen,
                 vhSummer: e?.vhSummer ?? null,
-                elevationM: e?.elevationM ?? null,
+                elevationM: reading.elevationM,
                 leafOffObs: e?.leafOffObs === null || e?.leafOffObs === undefined ? null : Math.round(e.leafOffObs),
             },
             building: { state: buildingState, count: count + touching, insideM2: Math.round(insideM2), source: 'Microsoft Global ML Building Footprints' },
@@ -400,10 +453,20 @@ async function main(): Promise<void> {
     // Only the buildings near an audited parcel that matters go to the site (the rest stay in the cache file).
     const out: AuditFile = {
         generatedAt: new Date().toISOString(),
-        method: 'Parsel başına üç bağımsız kaynak: TKGM tapu niteliği × ÇAYKUR ruhsat kaydı × nitelikten bağımsız uydu tespiti (çay) ve bina izleri (yapı). Sonuç eksper için işarettir; hukuki karar değildir.',
+        method: 'Parsel başına üç bağımsız kaynak: TKGM tapu niteliği × ÇAYKUR ruhsat kaydı × uydudan çay okuması ve bina izleri (yapı). Sonuç eksper için işarettir; hukuki karar değildir.',
         rules: R,
         evidenceRules: EVIDENCE_RULES,
         model: m,
+        teaSource: cover
+            ? {
+                  kind: 'land_cover',
+                  generatedAt: cover.generatedAt,
+                  reference: used ? { parcels: cover.model.reference.parcels, teaFound: used.teaFound, teaTotal: used.teaTotal, noTeaRight: used.noTeaRight, noTeaTotal: used.noTeaTotal, balanced: used.balanced } : null,
+                  byElevation: cover.model.byElevation ?? [],
+                  highElevationM: cover.rules.highElevationM ?? null,
+                  note: 'Çay okuması arazi tespiti modülünden gelir: eğitim etiketleri tapudan değil, ağaç yüksekliği ile kış yeşilliğinin uzlaştığı piksellerden; sınama, bir kişinin baktığı parsellerle yapılmıştır (drone okumaları ve saha gözlemleri). Sınama seti küçüktür ve tek mahalledendir.',
+              }
+            : { kind: 'title_model', generatedAt: null, reference: null, byElevation: [], highElevationM: null, note: 'Çay okuması, tapu niteliğiyle eğitilmiş eski tespitten gelir; sayıları tapuyla uyumu ölçer, sahayı değil.' },
         licenceSource,
         demoLicences: demoLicences
             ? {
